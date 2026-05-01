@@ -1,0 +1,393 @@
+Sub 運行記録メニューを開く()
+    UserForm1.Show vbModeless  ' モードレス表示
+End Sub
+
+Sub CSV取込()
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets("記録")
+
+    ' CSVファイルを選択
+    Dim filePath As String
+    filePath = Application.GetOpenFilename("CSVファイル (*.csv), *.csv", , "CSVファイルを選択してください")
+    If filePath = "False" Then Exit Sub
+
+    ' CSVブックを開く
+    Dim csvWB As Workbook
+    Set csvWB = Workbooks.Open(filePath)
+    Dim csvWS As Worksheet
+    Set csvWS = csvWB.Sheets(1)
+
+    ' データ行数チェック
+    Dim lastRowCSV As Long
+    lastRowCSV = csvWS.Cells(Rows.Count, 1).End(xlUp).Row
+    If lastRowCSV < 3 Then
+        MsgBox "CSVに有効なデータがありません。", vbExclamation
+        csvWB.Close False
+        Exit Sub
+    End If
+
+    ' 転記処理
+    Dim lastRow記録 As Long
+    lastRow記録 = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    If lastRow記録 < 2 Then lastRow記録 = 1
+
+    Dim i As Long, j As Long, targetRow As Long
+    Dim id As Variant
+    Dim insertedCount As Long: insertedCount = 0
+
+    For i = 3 To lastRowCSV
+        id = csvWS.Cells(i, 1).Value ' 回答番号（A列）
+
+        If Application.WorksheetFunction.CountIf(ws.Range("A:A"), id) = 0 Then
+            targetRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row + 1
+
+            ' A～O → A～O（1～15列目）
+            For j = 1 To 15
+                ws.Cells(targetRow, j).Value = csvWS.Cells(i, j).Value
+            Next j
+
+            ' P～AO → Q～AP（16～40列目 → 17～41列目）
+            For j = 16 To 40
+                ws.Cells(targetRow, j + 1).Value = csvWS.Cells(i, j).Value
+            Next j
+
+            insertedCount = insertedCount + 1
+        End If
+    Next i
+
+    csvWB.Close False
+
+    ' === 「その他」の置換処理 ===
+    Dim headerRow As Long: headerRow = 1
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+
+    Dim keyPairs As Variant
+    keyPairs = Array( _
+        Array("行先", "行先（その他）"), _
+        Array("用務", "用務（その他）"), _
+        Array("ガソリン給油の有無 [給油の場合はその他に数値入力（?）]", "ガソリン給油量"), _
+        Array("軽油給油の有無 [給油の場合はその他に数値入力（?）]", "軽油給油量"), _
+        Array("オイル給油の有無 [給油の場合はその他に数値入力（?）]", "オイル給油量") _
+    )
+
+    Dim mainCol As Long, subCol As Long, k As Long
+    For k = LBound(keyPairs) To UBound(keyPairs)
+        mainCol = 0: subCol = 0
+        For j = 1 To ws.Cells(headerRow, Columns.Count).End(xlToLeft).Column
+            If ws.Cells(headerRow, j).Value = keyPairs(k)(0) Then mainCol = j
+            If ws.Cells(headerRow, j).Value = keyPairs(k)(1) Then subCol = j
+        Next j
+
+        If mainCol = 0 Or subCol = 0 Then
+            MsgBox "列が見つかりません：" & vbCrLf & _
+                   "主項目: " & keyPairs(k)(0) & vbCrLf & _
+                   "補足項目: " & keyPairs(k)(1), vbExclamation
+        Else
+            For i = 2 To lastRow
+                If Trim(ws.Cells(i, mainCol).Value) = "その他" Then
+                    ws.Cells(i, mainCol).Value = ws.Cells(i, subCol).Value
+                    ws.Cells(i, subCol).ClearContents
+                End If
+            Next i
+        End If
+    Next k
+
+    ' === 確認者（その他）の削除のみ処理 ===
+    Dim deleteOnlyPairs As Variant
+    deleteOnlyPairs = Array( _
+        Array("確認者（運転前） [「運行管理者」＝主管課長]", "確認者運転前（その他）"), _
+        Array("確認者（運転後） [「運行管理者」＝主管課長]", "確認者運転後（その他）") _
+    )
+
+    For k = LBound(deleteOnlyPairs) To UBound(deleteOnlyPairs)
+        mainCol = 0: subCol = 0
+        For j = 1 To ws.Cells(headerRow, Columns.Count).End(xlToLeft).Column
+            If ws.Cells(headerRow, j).Value = deleteOnlyPairs(k)(0) Then mainCol = j
+            If ws.Cells(headerRow, j).Value = deleteOnlyPairs(k)(1) Then subCol = j
+        Next j
+
+        If mainCol = 0 Or subCol = 0 Then
+            MsgBox "列が見つかりません（削除対象）：" & vbCrLf & _
+                   "主項目: " & deleteOnlyPairs(k)(0) & vbCrLf & _
+                   "補足項目: " & deleteOnlyPairs(k)(1), vbExclamation
+        Else
+            For i = 2 To lastRow
+                If Trim(ws.Cells(i, mainCol).Value) = "その他" Then
+                    ws.Cells(i, mainCol).ClearContents
+                End If
+            Next i
+        End If
+    Next k
+
+    MsgBox insertedCount & " 件のデータを追記し、「その他」の補完・削除処理を完了しました。", vbInformation
+End Sub
+Sub 記録シート整理()
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets("記録")
+
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    If lastRow < 3 Then
+        MsgBox "データが不足しています。", vbExclamation
+        Exit Sub
+    End If
+
+    ' 並び替え（2行目から）
+    With ws.Sort
+        .SortFields.Clear
+        .SortFields.Add Key:=ws.Range("J2:J" & lastRow), Order:=xlAscending
+        .SortFields.Add Key:=ws.Range("K2:K" & lastRow), Order:=xlAscending
+        .SortFields.Add Key:=ws.Range("N2:N" & lastRow), Order:=xlAscending
+        .SetRange ws.Range("A2:AO" & lastRow)
+        .Header = xlNo ' ヘッダーなしで並び替える
+        .Apply
+    End With
+
+    ' 自動補完処理（P列：始業時メーター）
+    Dim i As Long
+    Dim current車両 As String, previous車両 As String
+    Dim previousメーター As Variant
+
+    previous車両 = ""
+    previousメーター = ""
+
+    For i = 2 To lastRow
+        current車両 = ws.Cells(i, "J").Value
+
+        If current車両 = previous車両 And IsNumeric(previousメーター) Then
+            ws.Cells(i, "P").Value = previousメーター
+        End If
+
+        previous車両 = current車両
+        previousメーター = ws.Cells(i, "Q").Value
+    Next i
+
+    MsgBox "並び替えと始業時メーターの補完が完了しました。", vbInformation
+End Sub
+Sub 転記to印刷様式()
+    Dim wsSrc As Worksheet, wsDest As Worksheet
+    Set wsSrc = ThisWorkbook.Sheets("記録")
+    Set wsDest = ThisWorkbook.Sheets("印刷様式")
+
+    Dim carNo As String
+    Dim ansStart As Long, ansEnd As Long
+    Dim i As Long, destTopRow As Long
+    Dim rowCount As Integer: rowCount = 0
+
+    carNo = wsDest.Range("N2").Value
+    ansStart = wsDest.Range("O2").Value
+    ansEnd = wsDest.Range("P2").Value
+
+    If carNo = "" Or ansStart = 0 Or ansEnd = 0 Then
+        MsgBox "N2～P2に車両番号・開始回答番号・終了回答番号を入力してください。", vbExclamation
+        Exit Sub
+    End If
+
+    For i = 2 To wsSrc.Cells(wsSrc.Rows.Count, "A").End(xlUp).Row
+        If wsSrc.Cells(i, "J").Value = carNo Then
+            If wsSrc.Cells(i, "A").Value >= ansStart And wsSrc.Cells(i, "A").Value <= ansEnd Then
+                destTopRow = 3 + rowCount * 22 ' 21行使用＋1行空き
+
+                With wsDest
+                    .Range("A" & destTopRow).Value = wsSrc.Cells(i, "K").Value ' 運転した日
+                    .Range("D" & destTopRow).Value = wsSrc.Cells(i, "L").Value ' 天気
+                    .Range("G" & destTopRow).Value = wsSrc.Cells(i, "M").Value ' 自動車の状況
+                    .Range("J" & destTopRow).Value = wsSrc.Cells(i, "J").Value ' 車両番号
+
+                    .Range("B" & (destTopRow + 2)).Value = wsSrc.Cells(i, "N").Value ' 使用時間（始）
+                    .Range("B" & (destTopRow + 3)).Value = wsSrc.Cells(i, "O").Value ' 使用時間（終）
+
+                    .Range("D" & (destTopRow + 2)).Value = wsSrc.Cells(i, "R").Value ' 行先
+                    .Range("D" & (destTopRow + 3)).Value = wsSrc.Cells(i, "P").Value ' 始業メーター
+                    .Range("D" & (destTopRow + 4)).Value = wsSrc.Cells(i, "Q").Value ' 終業メーター
+
+                    .Range("E" & (destTopRow + 2)).Value = wsSrc.Cells(i, "T").Value ' 用務
+                    .Range("G" & (destTopRow + 3)).Value = wsSrc.Cells(i, "V").Value ' 乗車人数
+                    .Range("H" & (destTopRow + 3)).Value = wsSrc.Cells(i, "W").Value ' 運転者氏名
+
+                    .Range("K" & (destTopRow + 2)).Value = wsSrc.Cells(i, "X").Value ' ガソリン給油
+                    .Range("K" & (destTopRow + 3)).Value = wsSrc.Cells(i, "Z").Value ' 軽油給油
+                    .Range("K" & (destTopRow + 4)).Value = wsSrc.Cells(i, "AB").Value ' オイル給油
+
+                    ' --- 燃料残量（L列） ---
+                    Dim fuelLevel As Long
+                    fuelLevel = val(Trim(wsSrc.Cells(i, "AD").Value))
+                    If fuelLevel >= 2 And fuelLevel <= 5 Then
+                        .Range("L" & (destTopRow + 3)).Value = String(fuelLevel - 1, "■")
+                    Else
+                        .Range("L" & (destTopRow + 3)).Value = ""
+                    End If
+
+                    ' --- 酒気帯びチェック（運転前） ---
+                    Call 転記_確認者チェック(wsSrc, wsDest, i, destTopRow + 6, "AE", "AF", "AG", "AH", "AI")
+
+                    ' --- 酒気帯びチェック（運転後） ---
+                    Call 転記_確認者チェック(wsSrc, wsDest, i, destTopRow + 12, "AJ", "AK", "AL", "AM", "AN")
+
+                    ' --- 特記事項 ---
+                    .Range("B" & (destTopRow + 18)).Value = wsSrc.Cells(i, "AO").Value
+                End With
+
+                rowCount = rowCount + 1
+                ' ← 行数制限は削除！
+            End If
+        End If
+    Next i
+
+    MsgBox rowCount & " 件のデータを印刷様式に転記しました。", vbInformation
+End Sub
+
+Sub 転記_確認者チェック(wsSrc As Worksheet, wsDest As Worksheet, rowSrc As Long, baseRow As Long, _
+                          col確認者 As String, colその他 As String, col方法 As String, col有無 As String, col数値 As String)
+
+    Dim val確認者 As String: val確認者 = wsSrc.Cells(rowSrc, col確認者).Value
+    Dim val方法 As String: val方法 = wsSrc.Cells(rowSrc, col方法).Value
+    Dim val有無 As String: val有無 = wsSrc.Cells(rowSrc, col有無).Value
+
+    ' --- 確認者チェック（E列） ---
+    wsDest.Cells(baseRow, "E").Value = IIf(val確認者 = "運転者本人", "■", "□")
+    wsDest.Cells(baseRow + 1, "E").Value = IIf(val確認者 = "副運行管理者", "■", "□")
+    wsDest.Cells(baseRow + 2, "E").Value = IIf(val確認者 = "運行管理者", "■", "□")
+    
+    ' ここがポイント！
+    If val確認者 = "その他" Or val確認者 = "" Then
+        wsDest.Cells(baseRow + 3, "E").Value = "■"
+        wsDest.Cells(baseRow + 4, "F").Value = wsSrc.Cells(rowSrc, colその他).Value
+    Else
+        wsDest.Cells(baseRow + 3, "E").Value = "□"
+        wsDest.Cells(baseRow + 4, "F").MergeArea.ClearContents
+    End If
+
+
+    ' --- F列への処理（その他 or 確認者が空白なら備考等を出力） ---
+    If val確認者 = "その他" Or val確認者 = "" Then
+        wsDest.Cells(baseRow + 4, "F").Value = wsSrc.Cells(rowSrc, colその他).Value
+    Else
+        wsDest.Cells(baseRow + 4, "F").MergeArea.ClearContents
+    End If
+
+    ' --- 確認方法（H列） ---
+    wsDest.Cells(baseRow, "H").Value = IIf(val方法 = "対面", "■", "□")
+    wsDest.Cells(baseRow + 1, "H").Value = IIf(val方法 <> "対面", "■", "□")
+
+    ' --- 酒気帯びの有無（J列） ---
+    wsDest.Cells(baseRow, "J").Value = IIf(val有無 = "有", "■", "□")
+    wsDest.Cells(baseRow + 1, "J").Value = IIf(val有無 = "無", "■", "□")
+
+    ' --- アルコール検知器の数値（K列） ---
+    wsDest.Cells(baseRow + 4, "K").Value = wsSrc.Cells(rowSrc, col数値).Value
+
+End Sub
+Sub 一括消去()
+
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets("印刷様式")
+
+    Dim i As Integer
+    Dim blockStartRow As Long
+    Dim blockHeight As Long: blockHeight = 22 ' 1ブロック21行＋1行空け
+    Dim maxRow As Long
+    Dim maxBlocks As Integer
+
+    maxRow = ws.UsedRange.Rows(ws.UsedRange.Rows.Count).Row
+    maxBlocks = Int((maxRow - 3) / blockHeight) + 1
+
+    Dim r As Range
+
+    For i = 0 To maxBlocks - 1
+        blockStartRow = 3 + i * blockHeight
+
+        With ws
+            ' --- ヘッダー部 ---
+            For Each r In .Range("A" & blockStartRow & ":A" & blockStartRow)
+                r.MergeArea.ClearContents
+            Next r
+            For Each r In .Range("D" & blockStartRow & ":D" & blockStartRow)
+                r.MergeArea.ClearContents
+            Next r
+            For Each r In .Range("G" & blockStartRow & ":G" & blockStartRow)
+                r.MergeArea.ClearContents
+            Next r
+            For Each r In .Range("J" & blockStartRow & ":J" & blockStartRow)
+                r.MergeArea.ClearContents
+            Next r
+
+            ' --- 基本情報 ---
+            For Each r In .Range("B" & (blockStartRow + 2) & ":B" & (blockStartRow + 3))
+                r.MergeArea.ClearContents
+            Next r
+            For Each r In .Range("D" & (blockStartRow + 2) & ":D" & (blockStartRow + 4))
+                r.MergeArea.ClearContents
+            Next r
+            For Each r In .Range("E" & (blockStartRow + 2) & ":E" & (blockStartRow + 2))
+                r.MergeArea.ClearContents
+            Next r
+            For Each r In .Range("G" & (blockStartRow + 3) & ":G" & (blockStartRow + 3))
+                r.MergeArea.ClearContents
+            Next r
+            For Each r In .Range("H" & (blockStartRow + 3) & ":H" & (blockStartRow + 3))
+                r.MergeArea.ClearContents
+            Next r
+
+            ' --- 給油情報 ---
+            For Each r In .Range("K" & (blockStartRow + 2) & ":K" & (blockStartRow + 4))
+                r.MergeArea.ClearContents
+            Next r
+
+            ' --- 燃料残量 ---
+            For Each r In .Range("L" & (blockStartRow + 3) & ":L" & (blockStartRow + 3))
+                r.MergeArea.ClearContents
+            Next r
+
+            ' --- 酒気帯び確認（運転前） ---
+            For Each r In .Range("E" & (blockStartRow + 6) & ":E" & (blockStartRow + 9))
+                r.MergeArea.ClearContents
+            Next r
+            For Each r In .Range("F" & (blockStartRow + 10) & ":F" & (blockStartRow + 10))
+                r.MergeArea.ClearContents
+            Next r
+            For Each r In .Range("H" & (blockStartRow + 6) & ":H" & (blockStartRow + 7))
+                r.MergeArea.ClearContents
+            Next r
+            For Each r In .Range("J" & (blockStartRow + 6) & ":J" & (blockStartRow + 7))
+                r.MergeArea.ClearContents
+            Next r
+            For Each r In .Range("J" & (blockStartRow + 8) & ":J" & (blockStartRow + 8))
+                r.MergeArea.ClearContents
+            Next r
+            For Each r In .Range("K" & (blockStartRow + 10) & ":K" & (blockStartRow + 10))
+                r.MergeArea.ClearContents
+            Next r
+
+            ' --- 酒気帯び確認（運転後） ---
+            For Each r In .Range("E" & (blockStartRow + 12) & ":E" & (blockStartRow + 15))
+                r.MergeArea.ClearContents
+            Next r
+            For Each r In .Range("F" & (blockStartRow + 16) & ":F" & (blockStartRow + 16))
+                r.MergeArea.ClearContents
+            Next r
+            For Each r In .Range("H" & (blockStartRow + 12) & ":H" & (blockStartRow + 13))
+                r.MergeArea.ClearContents
+            Next r
+            For Each r In .Range("J" & (blockStartRow + 12) & ":J" & (blockStartRow + 13))
+                r.MergeArea.ClearContents
+            Next r
+            For Each r In .Range("J" & (blockStartRow + 14) & ":J" & (blockStartRow + 14))
+                r.MergeArea.ClearContents
+            Next r
+            For Each r In .Range("K" & (blockStartRow + 16) & ":K" & (blockStartRow + 16))
+                r.MergeArea.ClearContents
+            Next r
+
+            ' --- 特記事項 ---
+            For Each r In .Range("B" & (blockStartRow + 18) & ":B" & (blockStartRow + 18))
+                r.MergeArea.ClearContents
+            Next r
+        End With
+    Next i
+
+    MsgBox "印刷様式の転記内容を初期化しました。", vbInformation
+
+End Sub
+
