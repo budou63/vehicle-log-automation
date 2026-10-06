@@ -9,127 +9,210 @@ Sub 運行記録メニューを開く()
 End Sub
 
 Sub CSV取込()
-    Dim ws As Worksheet
+    Dim ws As Worksheet, historyWS As Worksheet
     Set ws = ThisWorkbook.Sheets("記録")
 
-    ' CSVファイルを選択
     Dim filePath As String
     filePath = Application.GetOpenFilename("CSVファイル (*.csv), *.csv", , "CSVファイルを選択してください")
     If filePath = "False" Then Exit Sub
 
-    ' CSVブックを開く
     Dim csvWB As Workbook
     Set csvWB = Workbooks.Open(filePath)
     Dim csvWS As Worksheet
     Set csvWS = csvWB.Sheets(1)
 
-    ' データ行数チェック
     Dim lastRowCSV As Long
-    lastRowCSV = csvWS.Cells(Rows.Count, 1).End(xlUp).Row
+    lastRowCSV = csvWS.Cells(csvWS.Rows.Count, 1).End(xlUp).Row
     If lastRowCSV < 3 Then
         MsgBox "CSVに有効なデータがありません。", vbExclamation
         csvWB.Close False
         Exit Sub
     End If
 
-    ' 転記処理
-    Dim lastRow記録 As Long
-    lastRow記録 = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
-    If lastRow記録 < 2 Then lastRow記録 = 1
+    On Error Resume Next
+    Set historyWS = ThisWorkbook.Worksheets("取込履歴")
+    On Error GoTo 0
+    If historyWS Is Nothing Then
+        MsgBox "「取込履歴」シートが見つかりません。CSV取込を中止します。", vbExclamation
+        csvWB.Close False
+        Exit Sub
+    End If
+
+    Dim historyIDs As Object
+    Set historyIDs = CreateObject("Scripting.Dictionary")
+    historyIDs.CompareMode = vbBinaryCompare
+    If Not 取込履歴を準備(ws, historyWS, historyIDs) Then
+        csvWB.Close False
+        Exit Sub
+    End If
 
     Dim i As Long, j As Long, targetRow As Long
-    Dim id As Variant
-    Dim insertedCount As Long: insertedCount = 0
+    Dim id As Variant, idKey As String
+    Dim insertedCount As Long, historyFailureCount As Long
+    Dim firstInsertedRow As Long, lastInsertedRow As Long
 
     For i = 3 To lastRowCSV
-        id = csvWS.Cells(i, 1).Value ' 回答番号（A列）
-
-        If Application.WorksheetFunction.CountIf(ws.Range("A:A"), id) = 0 Then
-            targetRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row + 1
-
-            ' A～O → A～O（1～15列目）
-            For j = 1 To 15
-                ws.Cells(targetRow, j).Value = csvWS.Cells(i, j).Value
-            Next j
-
-            ' P～AO → Q～AP（16～40列目 → 17～41列目）
-            For j = 16 To 40
-                ws.Cells(targetRow, j + 1).Value = csvWS.Cells(i, j).Value
-            Next j
-
-            insertedCount = insertedCount + 1
+        id = csvWS.Cells(i, 1).Value
+        idKey = 回答番号をキー化(id)
+        If Len(idKey) > 0 Then
+            If Not historyIDs.Exists(idKey) Then
+                targetRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row + 1
+                If targetRow < 2 Then targetRow = 2
+                For j = 1 To 15
+                    ws.Cells(targetRow, j).Value = csvWS.Cells(i, j).Value
+                Next j
+                For j = 16 To 40
+                    ws.Cells(targetRow, j + 1).Value = csvWS.Cells(i, j).Value
+                Next j
+                insertedCount = insertedCount + 1
+                If firstInsertedRow = 0 Then firstInsertedRow = targetRow
+                lastInsertedRow = targetRow
+                If Not 取込履歴へ追加(historyWS, historyIDs, id, idKey) Then
+                    historyFailureCount = historyFailureCount + 1
+                End If
+            End If
         End If
     Next i
 
     csvWB.Close False
 
-    ' === 「その他」の置換処理 ===
-    Dim headerRow As Long: headerRow = 1
-    Dim lastRow As Long
-    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    If insertedCount > 0 Then
+        Dim headerRow As Long: headerRow = 1
+        Dim lastRow As Long: lastRow = lastInsertedRow
+        Dim keyPairs As Variant
+        keyPairs = Array( _
+            Array("行先", "行先（その他）"), _
+            Array("用務", "用務（その他）"), _
+            Array("ガソリン給油の有無 [給油の場合はその他に数値入力（?）]", "ガソリン給油量"), _
+            Array("軽油給油の有無 [給油の場合はその他に数値入力（?）]", "軽油給油量"), _
+            Array("オイル給油の有無 [給油の場合はその他に数値入力（?）]", "オイル給油量") _
+        )
+        Dim mainCol As Long, subCol As Long, k As Long
+        For k = LBound(keyPairs) To UBound(keyPairs)
+            mainCol = 0: subCol = 0
+            For j = 1 To ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+                If ws.Cells(headerRow, j).Value = keyPairs(k)(0) Then mainCol = j
+                If ws.Cells(headerRow, j).Value = keyPairs(k)(1) Then subCol = j
+            Next j
+            If mainCol = 0 Or subCol = 0 Then
+                MsgBox "列が見つかりません：" & vbCrLf & _
+                       "主項目: " & keyPairs(k)(0) & vbCrLf & _
+                       "補足項目: " & keyPairs(k)(1), vbExclamation
+            Else
+                For i = firstInsertedRow To lastRow
+                    If Trim(ws.Cells(i, mainCol).Value) = "その他" Then
+                        ws.Cells(i, mainCol).Value = ws.Cells(i, subCol).Value
+                        ws.Cells(i, subCol).ClearContents
+                    End If
+                Next i
+            End If
+        Next k
 
-    Dim keyPairs As Variant
-    keyPairs = Array( _
-        Array("行先", "行先（その他）"), _
-        Array("用務", "用務（その他）"), _
-        Array("ガソリン給油の有無 [給油の場合はその他に数値入力（?）]", "ガソリン給油量"), _
-        Array("軽油給油の有無 [給油の場合はその他に数値入力（?）]", "軽油給油量"), _
-        Array("オイル給油の有無 [給油の場合はその他に数値入力（?）]", "オイル給油量") _
-    )
-
-    Dim mainCol As Long, subCol As Long, k As Long
-    For k = LBound(keyPairs) To UBound(keyPairs)
-        mainCol = 0: subCol = 0
-        For j = 1 To ws.Cells(headerRow, Columns.Count).End(xlToLeft).Column
-            If ws.Cells(headerRow, j).Value = keyPairs(k)(0) Then mainCol = j
-            If ws.Cells(headerRow, j).Value = keyPairs(k)(1) Then subCol = j
-        Next j
-
-        If mainCol = 0 Or subCol = 0 Then
-            MsgBox "列が見つかりません：" & vbCrLf & _
-                   "主項目: " & keyPairs(k)(0) & vbCrLf & _
-                   "補足項目: " & keyPairs(k)(1), vbExclamation
-        Else
-            For i = 2 To lastRow
-                If Trim(ws.Cells(i, mainCol).Value) = "その他" Then
-                    ws.Cells(i, mainCol).Value = ws.Cells(i, subCol).Value
-                    ws.Cells(i, subCol).ClearContents
-                End If
-            Next i
-        End If
-    Next k
-
-    ' === 確認者（その他）の削除のみ処理 ===
-    Dim deleteOnlyPairs As Variant
-    deleteOnlyPairs = Array( _
-        Array("確認者（運転前） [「運行管理者」＝主管課長]", "確認者運転前（その他）"), _
-        Array("確認者（運転後） [「運行管理者」＝主管課長]", "確認者運転後（その他）") _
-    )
-
-    For k = LBound(deleteOnlyPairs) To UBound(deleteOnlyPairs)
-        mainCol = 0: subCol = 0
-        For j = 1 To ws.Cells(headerRow, Columns.Count).End(xlToLeft).Column
-            If ws.Cells(headerRow, j).Value = deleteOnlyPairs(k)(0) Then mainCol = j
-            If ws.Cells(headerRow, j).Value = deleteOnlyPairs(k)(1) Then subCol = j
-        Next j
-
-        If mainCol = 0 Or subCol = 0 Then
-            MsgBox "列が見つかりません（削除対象）：" & vbCrLf & _
-                   "主項目: " & deleteOnlyPairs(k)(0) & vbCrLf & _
-                   "補足項目: " & deleteOnlyPairs(k)(1), vbExclamation
-        Else
-            For i = 2 To lastRow
-                If Trim(ws.Cells(i, mainCol).Value) = "その他" Then
-                    ws.Cells(i, mainCol).ClearContents
-                End If
-            Next i
-        End If
-    Next k
+        Dim deleteOnlyPairs As Variant
+        deleteOnlyPairs = Array( _
+            Array("確認者（運転前） [「運行管理者」＝主管課長]", "確認者運転前（その他）"), _
+            Array("確認者（運転後） [「運行管理者」＝主管課長]", "確認者運転後（その他）") _
+        )
+        For k = LBound(deleteOnlyPairs) To UBound(deleteOnlyPairs)
+            mainCol = 0: subCol = 0
+            For j = 1 To ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+                If ws.Cells(headerRow, j).Value = deleteOnlyPairs(k)(0) Then mainCol = j
+                If ws.Cells(headerRow, j).Value = deleteOnlyPairs(k)(1) Then subCol = j
+            Next j
+            If mainCol = 0 Or subCol = 0 Then
+                MsgBox "列が見つかりません（削除対象）：" & vbCrLf & _
+                       "主項目: " & deleteOnlyPairs(k)(0) & vbCrLf & _
+                       "補足項目: " & deleteOnlyPairs(k)(1), vbExclamation
+            Else
+                For i = firstInsertedRow To lastRow
+                    If Trim(ws.Cells(i, mainCol).Value) = "その他" Then
+                        ws.Cells(i, mainCol).ClearContents
+                    End If
+                Next i
+            End If
+        Next k
+    End If
 
     Call 入力内容チェック実行(False)
-
-    MsgBox insertedCount & " 件のデータを追記し、「その他」の補完・削除処理を完了しました。", vbInformation
+    If historyFailureCount > 0 Then
+        MsgBox insertedCount & " 件のデータを追記しましたが、" & historyFailureCount & _
+               " 件の回答番号を取込履歴へ登録できませんでした。履歴を確認してください。", vbExclamation
+    Else
+        MsgBox insertedCount & " 件のデータを追記し、「その他」の補完・削除処理を完了しました。", vbInformation
+    End If
 End Sub
+
+
+Private Function 回答番号をキー化(ByVal answerId As Variant) As String
+    On Error GoTo InvalidAnswerId
+    If IsError(answerId) Or IsEmpty(answerId) Then Exit Function
+    回答番号をキー化 = Trim$(CStr(answerId))
+    Exit Function
+InvalidAnswerId:
+    回答番号をキー化 = ""
+End Function
+
+Private Function 取込履歴を準備(ByVal recordWS As Worksheet, ByVal historyWS As Worksheet, _
+                              ByVal historyIDs As Object) As Boolean
+    Dim headerValue As Variant, answerId As Variant, answerKey As String
+    Dim lastHistoryRow As Long, lastRecordRow As Long, rowNo As Long
+    On Error GoTo PrepareFailed
+    headerValue = historyWS.Cells(1, 1).Value
+    If IsError(headerValue) Then GoTo InvalidHeader
+    If Len(Trim$(CStr(headerValue))) = 0 Then
+        historyWS.Cells(1, 1).Value = "回答番号"
+    ElseIf Trim$(CStr(headerValue)) <> "回答番号" Then
+        GoTo InvalidHeader
+    End If
+
+    lastHistoryRow = historyWS.Cells(historyWS.Rows.Count, 1).End(xlUp).Row
+    For rowNo = 2 To lastHistoryRow
+        answerKey = 回答番号をキー化(historyWS.Cells(rowNo, 1).Value)
+        If Len(answerKey) > 0 Then
+            If Not historyIDs.Exists(answerKey) Then historyIDs.Add answerKey, True
+        End If
+    Next rowNo
+
+    lastRecordRow = recordWS.Cells(recordWS.Rows.Count, 1).End(xlUp).Row
+    For rowNo = 2 To lastRecordRow
+        answerId = recordWS.Cells(rowNo, 1).Value
+        answerKey = 回答番号をキー化(answerId)
+        If Len(answerKey) > 0 Then
+            If Not historyIDs.Exists(answerKey) Then
+                If Not 取込履歴へ追加(historyWS, historyIDs, answerId, answerKey) Then GoTo PrepareFailed
+            End If
+        End If
+    Next rowNo
+
+    取込履歴を準備 = True
+    Exit Function
+InvalidHeader:
+    MsgBox "「取込履歴」シートのA1を「回答番号」にしてください。データ保護のためCSV取込を中止しました。", vbExclamation
+    Exit Function
+PrepareFailed:
+    MsgBox "取込履歴を同期できなかったため、CSV取込を中止しました。" & vbCrLf & Err.Description, vbExclamation
+    Err.Clear
+End Function
+
+
+Private Function 取込履歴へ追加(ByVal historyWS As Worksheet, ByVal historyIDs As Object, _
+                              ByVal answerId As Variant, ByVal answerKey As String) As Boolean
+    Dim targetRow As Long
+    On Error GoTo AddFailed
+    If historyIDs.Exists(answerKey) Then
+        取込履歴へ追加 = True
+        Exit Function
+    End If
+
+    historyIDs.Add answerKey, True
+    targetRow = historyWS.Cells(historyWS.Rows.Count, 1).End(xlUp).Row + 1
+    If targetRow < 2 Then targetRow = 2
+    historyWS.Cells(targetRow, 1).Value = answerId
+    取込履歴へ追加 = True
+    Exit Function
+AddFailed:
+    Err.Clear
+End Function
 Public Sub 入力内容チェック()
     Call 入力内容チェック実行(True)
 End Sub
