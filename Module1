@@ -2,6 +2,7 @@ Private Const CHECK_LONG_DISTANCE_KM As Double = 100#
 Private Const CHECK_LONG_USAGE_HOURS As Double = 8#
 Private Const CHECK_ODO_TOLERANCE_KM As Double = 2#
 Private Const CHECK_VEHICLE_SELECTION_ODO_TOLERANCE_KM As Double = 2#
+Private Const GASOLINE_FUEL_HEADER As String = "ガソリン給油の有無 [給油の場合はその他に数値入力（?）]"
 Private Const CHECK_WARNING_START As String = "【自動入力チェック開始|"
 Private Const CHECK_WARNING_END As String = "【自動入力チェック終了】"
 
@@ -219,7 +220,7 @@ Public Sub 入力内容チェック()
 End Sub
 
 Private Function 入力内容チェック実行(ByVal 結果表示 As Boolean) As Long
-    Dim ws As Worksheet, lastRow As Long, rowNo As Long
+    Dim ws As Worksheet, lastRow As Long, rowNo As Long, gasolineColumn As Long
     Dim startMeter As Double, endMeter As Double, distanceKm As Double
     Dim startTime As Double, endTime As Double, durationMinutes As Long
     Dim startTimeValid As Boolean, endTimeValid As Boolean
@@ -232,7 +233,8 @@ Private Function 入力内容チェック実行(ByVal 結果表示 As Boolean) A
         Exit Function
     End If
 
-    Call 前回の自動チェック警告を除去(ws, 2, lastRow, commentFailures)
+    gasolineColumn = ガソリン給油列を取得(ws)
+    Call 前回の自動チェック警告を除去(ws, 2, lastRow, commentFailures, gasolineColumn)
     For rowNo = 2 To lastRow
         If 数値入力あり(ws.Cells(rowNo, "P").Value) And 数値入力あり(ws.Cells(rowNo, "Q").Value) Then
             startMeter = CDbl(ws.Cells(rowNo, "P").Value)
@@ -284,6 +286,10 @@ Private Function 入力内容チェック実行(ByVal 結果表示 As Boolean) A
                     Call 自動チェック警告を追加(ws.Cells(rowNo, "O"), warningText, commentFailures)
                 End If
             End If
+        End If
+
+        If gasolineColumn > 0 Then
+            Call ガソリン給油量をチェック(ws.Cells(rowNo, gasolineColumn), commentFailures)
         End If
     Next rowNo
 
@@ -355,6 +361,120 @@ Private Function 使用時間を表示(ByVal totalMinutes As Long) As String
     使用時間を表示 = CStr(totalMinutes \ 60) & "時間" & CStr(totalMinutes Mod 60) & "分"
 End Function
 
+Private Function ガソリン給油列を取得(ByVal ws As Worksheet) As Long
+    Dim lastColumn As Long, columnNo As Long, headerValue As Variant
+    lastColumn = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    For columnNo = 1 To lastColumn
+        headerValue = ws.Cells(1, columnNo).Value
+        If Not IsError(headerValue) And Not IsEmpty(headerValue) Then
+            If Trim$(CStr(headerValue)) = GASOLINE_FUEL_HEADER Then
+                ガソリン給油列を取得 = columnNo
+                Exit Function
+            End If
+        End If
+    Next columnNo
+End Function
+
+Private Sub ガソリン給油量をチェック(ByVal target As Range, ByRef errorCount As Long)
+    Dim amount As Double, noFuel As Boolean, nonPositive As Boolean, warningText As String
+    If ガソリン給油量を解析(target.Value, amount, noFuel, nonPositive) Then
+        target.Value = amount
+    ElseIf Not noFuel Then
+        If nonPositive Then
+            warningText = "要確認：ガソリン給油量が0以下です。" & vbCrLf & vbCrLf & _
+                          "入力値：" & セル値を表示(target.Value) & vbCrLf & vbCrLf & _
+                          "給油量を確認してください。"
+        Else
+            warningText = "要確認：ガソリン給油量を数値として認識できません。" & vbCrLf & vbCrLf & _
+                          "入力値：" & セル値を表示(target.Value) & vbCrLf & vbCrLf & _
+                          "数値のみ、または「25L」のような形式で入力してください。" & vbCrLf & _
+                          "入力内容を確認してください。"
+        End If
+        Call 自動チェック警告を追加(target, warningText, errorCount)
+    End If
+End Sub
+
+Private Function ガソリン給油量を解析(ByVal cellValue As Variant, ByRef amount As Double, _
+                                    ByRef noFuel As Boolean, ByRef nonPositive As Boolean) As Boolean
+    Dim normalizedValue As String, numericText As String
+    On Error GoTo InvalidFuelAmount
+    If IsError(cellValue) Or IsEmpty(cellValue) Then
+        noFuel = True
+        Exit Function
+    End If
+    If VarType(cellValue) = vbBoolean Then Exit Function
+
+    normalizedValue = Trim$(半角へ正規化(CStr(cellValue)))
+    If Len(normalizedValue) = 0 Or normalizedValue = "なし" Then
+        noFuel = True
+        Exit Function
+    End If
+
+    numericText = normalizedValue
+    If Right$(numericText, Len("リットル")) = "リットル" Then
+        numericText = Trim$(Left$(numericText, Len(numericText) - Len("リットル")))
+    ElseIf Right$(numericText, 1) = "L" Or Right$(numericText, 1) = "l" Or Right$(numericText, 1) = "ℓ" Then
+        numericText = Trim$(Left$(numericText, Len(numericText) - 1))
+    End If
+    If Not 十進数を取得(numericText, amount) Then Exit Function
+    If amount <= 0# Then
+        nonPositive = True
+        Exit Function
+    End If
+    ガソリン給油量を解析 = True
+    Exit Function
+InvalidFuelAmount:
+    Err.Clear
+End Function
+
+Private Function 十進数を取得(ByVal numericText As String, ByRef amount As Double) As Boolean
+    Dim position As Long, characterValue As String, digitValue As Long
+    Dim negative As Boolean, decimalFound As Boolean, digitFound As Boolean
+    Dim integerPart As Double, fractionPart As Double, divisor As Double
+
+    If Len(numericText) = 0 Then Exit Function
+    position = 1
+    If Left$(numericText, 1) = "-" Then
+        negative = True
+        position = 2
+    End If
+    If position > Len(numericText) Then Exit Function
+
+    For position = position To Len(numericText)
+        characterValue = Mid$(numericText, position, 1)
+        If characterValue >= "0" And characterValue <= "9" Then
+            digitValue = AscW(characterValue) - AscW("0")
+            digitFound = True
+            If decimalFound Then
+                divisor = divisor * 10#
+                fractionPart = fractionPart + digitValue / divisor
+            Else
+                integerPart = integerPart * 10# + digitValue
+            End If
+        ElseIf characterValue = "." And Not decimalFound Then
+            decimalFound = True
+            divisor = 1#
+        Else
+            Exit Function
+        End If
+    Next position
+    If Not digitFound Then Exit Function
+    If decimalFound And Right$(numericText, 1) = "." Then Exit Function
+
+    amount = integerPart + fractionPart
+    If negative Then amount = -amount
+    十進数を取得 = True
+End Function
+
+Private Function 半角へ正規化(ByVal sourceText As String) As String
+    On Error GoTo KeepOriginal
+    半角へ正規化 = StrConv(sourceText, vbNarrow)
+    Exit Function
+KeepOriginal:
+    半角へ正規化 = sourceText
+    Err.Clear
+End Function
+
 Private Function 日付と時刻を取得(ByVal dateValue As Variant, ByVal timeValue As Variant, _
                                ByRef dateTimeValue As Double) As Boolean
     Dim timeFraction As Double
@@ -370,13 +490,19 @@ InvalidDateTime:
 End Function
 
 Private Sub 前回の自動チェック警告を除去(ByVal ws As Worksheet, ByVal firstRow As Long, _
-                                      ByVal lastRow As Long, ByRef errorCount As Long)
+                                      ByVal lastRow As Long, ByRef errorCount As Long, _
+                                      ByVal gasolineColumn As Long)
     Dim rowNo As Long, columnName As Variant
     For Each columnName In Array("J", "N", "O", "P", "Q")
         For rowNo = firstRow To lastRow
             Call セルの自動チェック警告を除去(ws.Cells(rowNo, CStr(columnName)), errorCount)
         Next rowNo
     Next columnName
+    If gasolineColumn > 0 Then
+        For rowNo = firstRow To lastRow
+            Call セルの自動チェック警告を除去(ws.Cells(rowNo, gasolineColumn), errorCount)
+        Next rowNo
+    End If
 End Sub
 
 Private Sub セルの自動チェック警告を除去(ByVal target As Range, ByRef errorCount As Long)
