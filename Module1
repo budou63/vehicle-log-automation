@@ -1,3 +1,9 @@
+Private Const CHECK_LONG_DISTANCE_KM As Double = 100#
+Private Const CHECK_LONG_USAGE_HOURS As Double = 8#
+Private Const CHECK_ODO_TOLERANCE_KM As Double = 2#
+Private Const CHECK_WARNING_START As String = "【自動入力チェック開始|"
+Private Const CHECK_WARNING_END As String = "【自動入力チェック終了】"
+
 Sub 運行記録メニューを開く()
     UserForm1.Show vbModeless  ' モードレス表示
 End Sub
@@ -120,8 +126,409 @@ Sub CSV取込()
         End If
     Next k
 
+    Call 入力内容チェック実行(False)
+
     MsgBox insertedCount & " 件のデータを追記し、「その他」の補完・削除処理を完了しました。", vbInformation
 End Sub
+Public Sub 入力内容チェック()
+    Call 入力内容チェック実行(True)
+End Sub
+
+Private Function 入力内容チェック実行(ByVal 結果表示 As Boolean) As Long
+    Dim ws As Worksheet, lastRow As Long, rowNo As Long
+    Dim startMeter As Double, endMeter As Double, distanceKm As Double
+    Dim startTime As Double, endTime As Double, durationMinutes As Long
+    Dim startTimeValid As Boolean, endTimeValid As Boolean
+    Dim warningText As String, commentFailures As Long
+
+    Set ws = ThisWorkbook.Sheets("記録")
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    If lastRow < 2 Then
+        If 結果表示 Then MsgBox "確認対象の記録がありません。", vbInformation
+        Exit Function
+    End If
+
+    Call 前回の自動チェック警告を除去(ws, 2, lastRow, commentFailures)
+    For rowNo = 2 To lastRow
+        If 数値入力あり(ws.Cells(rowNo, "P").Value) And 数値入力あり(ws.Cells(rowNo, "Q").Value) Then
+            startMeter = CDbl(ws.Cells(rowNo, "P").Value)
+            endMeter = CDbl(ws.Cells(rowNo, "Q").Value)
+            distanceKm = endMeter - startMeter
+            If distanceKm < 0 Then
+                warningText = "要確認：終業時メーターが始業時メーターより小さくなっています。" & vbCrLf & _
+                              "始業時メーター：" & Format$(startMeter, "0.##") & "km" & vbCrLf & _
+                              "終業時メーター：" & Format$(endMeter, "0.##") & "km" & vbCrLf & "入力内容を確認してください。"
+                Call 自動チェック警告を追加(ws.Cells(rowNo, "P"), warningText, commentFailures)
+                Call 自動チェック警告を追加(ws.Cells(rowNo, "Q"), warningText, commentFailures)
+            ElseIf distanceKm >= CHECK_LONG_DISTANCE_KM Then
+                warningText = "要確認：1回の走行距離が" & Format$(CHECK_LONG_DISTANCE_KM, "0.##") & "km以上です。" & vbCrLf & _
+                              "始業時メーター：" & Format$(startMeter, "0.##") & "km" & vbCrLf & _
+                              "終業時メーター：" & Format$(endMeter, "0.##") & "km" & vbCrLf & _
+                              "走行距離：" & Format$(distanceKm, "0.##") & "km" & vbCrLf & "入力内容を確認してください。"
+                Call 自動チェック警告を追加(ws.Cells(rowNo, "P"), warningText, commentFailures)
+                Call 自動チェック警告を追加(ws.Cells(rowNo, "Q"), warningText, commentFailures)
+            End If
+        End If
+
+        startTimeValid = 時刻を取得(ws.Cells(rowNo, "N").Value, startTime)
+        endTimeValid = 時刻を取得(ws.Cells(rowNo, "O").Value, endTime)
+        If セルに値がある(ws.Cells(rowNo, "N").Value) And Not startTimeValid Then
+            warningText = "要確認：使用開始時刻を時刻として認識できません。入力値：" & _
+                          セル値を表示(ws.Cells(rowNo, "N").Value) & "。入力内容を確認してください。"
+            Call 自動チェック警告を追加(ws.Cells(rowNo, "N"), warningText, commentFailures)
+        End If
+        If セルに値がある(ws.Cells(rowNo, "O").Value) And Not endTimeValid Then
+            warningText = "要確認：使用終了時刻を時刻として認識できません。入力値：" & _
+                          セル値を表示(ws.Cells(rowNo, "O").Value) & "。入力内容を確認してください。"
+            Call 自動チェック警告を追加(ws.Cells(rowNo, "O"), warningText, commentFailures)
+        End If
+
+        If startTimeValid And endTimeValid Then
+            If endTime < startTime Then
+                warningText = "要確認：使用終了時刻が開始時刻より前になっています。" & vbCrLf & _
+                              "開始：" & Format$(startTime, "hh:mm") & vbCrLf & _
+                              "終了：" & Format$(endTime, "hh:mm") & vbCrLf & "入力内容を確認してください。"
+                Call 自動チェック警告を追加(ws.Cells(rowNo, "N"), warningText, commentFailures)
+                Call 自動チェック警告を追加(ws.Cells(rowNo, "O"), warningText, commentFailures)
+            Else
+                durationMinutes = CLng((endTime - startTime) * 1440# + 0.5)
+                If (endTime - startTime) * 24# >= CHECK_LONG_USAGE_HOURS Then
+                    warningText = "要確認：使用時間が" & Format$(CHECK_LONG_USAGE_HOURS, "0.##") & "時間以上です。" & vbCrLf & _
+                                  "開始：" & Format$(startTime, "hh:mm") & vbCrLf & "終了：" & Format$(endTime, "hh:mm") & vbCrLf & _
+                                  "使用時間：" & 使用時間を表示(durationMinutes) & vbCrLf & "入力内容を確認してください。"
+                    Call 自動チェック警告を追加(ws.Cells(rowNo, "N"), warningText, commentFailures)
+                    Call 自動チェック警告を追加(ws.Cells(rowNo, "O"), warningText, commentFailures)
+                End If
+            End If
+        End If
+    Next rowNo
+
+    Call 車両選択候補をチェック(ws, lastRow, commentFailures)
+    入力内容チェック実行 = commentFailures
+    If commentFailures > 0 Then
+        MsgBox "入力チェックは完了しましたが、" & commentFailures & _
+               "セルの警告コメントまたは既存コメントを処理できませんでした。該当セルを確認してください。", vbExclamation
+    ElseIf 結果表示 Then
+        MsgBox "入力内容チェックが完了しました。要確認の記録には赤字・太字とコメントを付けています。", vbInformation
+    End If
+End Function
+
+Private Function 数値入力あり(ByVal cellValue As Variant) As Boolean
+    If IsError(cellValue) Or IsEmpty(cellValue) Then Exit Function
+    If Len(Trim$(CStr(cellValue))) = 0 Then Exit Function
+    数値入力あり = IsNumeric(cellValue)
+End Function
+
+Private Function セルに値がある(ByVal cellValue As Variant) As Boolean
+    If IsError(cellValue) Then
+        セルに値がある = True
+    ElseIf IsEmpty(cellValue) Then
+        セルに値がある = False
+    Else
+        セルに値がある = (Len(Trim$(CStr(cellValue))) > 0)
+    End If
+End Function
+
+Private Function セル値を表示(ByVal cellValue As Variant) As String
+    If IsError(cellValue) Then
+        セル値を表示 = "Excelエラー値"
+    ElseIf IsEmpty(cellValue) Then
+        セル値を表示 = "（空欄）"
+    Else
+        セル値を表示 = CStr(cellValue)
+    End If
+End Function
+
+Private Function 時刻を取得(ByVal cellValue As Variant, ByRef timeFraction As Double) As Boolean
+    On Error GoTo InvalidTime
+    If IsError(cellValue) Or IsEmpty(cellValue) Then Exit Function
+    If Len(Trim$(CStr(cellValue))) = 0 Then Exit Function
+    If Not IsDate(cellValue) Then Exit Function
+    timeFraction = CDbl(TimeValue(CDate(cellValue)))
+    時刻を取得 = True
+    Exit Function
+InvalidTime:
+    時刻を取得 = False
+End Function
+
+Private Function 使用時間を表示(ByVal totalMinutes As Long) As String
+    使用時間を表示 = CStr(totalMinutes \ 60) & "時間" & CStr(totalMinutes Mod 60) & "分"
+End Function
+
+Private Function 日付と時刻を取得(ByVal dateValue As Variant, ByVal timeValue As Variant, _
+                               ByRef dateTimeValue As Double) As Boolean
+    Dim timeFraction As Double
+    On Error GoTo InvalidDateTime
+    If IsError(dateValue) Or IsEmpty(dateValue) Then Exit Function
+    If Not IsDate(dateValue) Then Exit Function
+    If Not 時刻を取得(timeValue, timeFraction) Then Exit Function
+    dateTimeValue = Fix(CDbl(CDate(dateValue))) + timeFraction
+    日付と時刻を取得 = True
+    Exit Function
+InvalidDateTime:
+    日付と時刻を取得 = False
+End Function
+
+Private Sub 前回の自動チェック警告を除去(ByVal ws As Worksheet, ByVal firstRow As Long, _
+                                      ByVal lastRow As Long, ByRef errorCount As Long)
+    Dim rowNo As Long, columnName As Variant
+    For Each columnName In Array("J", "N", "O", "P", "Q")
+        For rowNo = firstRow To lastRow
+            Call セルの自動チェック警告を除去(ws.Cells(rowNo, CStr(columnName)), errorCount)
+        Next rowNo
+    Next columnName
+End Sub
+
+Private Sub セルの自動チェック警告を除去(ByVal target As Range, ByRef errorCount As Long)
+    Dim note As Comment
+    Dim existingText As String, prefixText As String, suffixText As String, newText As String
+    Dim markerStart As Long, headerEnd As Long, markerEnd As Long, metadataStart As Long
+    Dim metadataText As String, metadataParts As Variant
+    Dim originalColor As Long, originalBold As Boolean
+
+    On Error GoTo RemoveFailed
+    Set note = target.Comment
+    If note Is Nothing Then Exit Sub
+    existingText = note.Text
+    markerStart = InStr(1, existingText, CHECK_WARNING_START, vbBinaryCompare)
+    If markerStart = 0 Then Exit Sub
+    headerEnd = InStr(markerStart, existingText, "】", vbBinaryCompare)
+    If headerEnd = 0 Then Exit Sub
+    markerEnd = InStr(headerEnd + 1, existingText, CHECK_WARNING_END, vbBinaryCompare)
+    If markerEnd = 0 Then Exit Sub
+
+    metadataStart = markerStart + Len(CHECK_WARNING_START)
+    metadataText = Mid$(existingText, metadataStart, headerEnd - metadataStart)
+    metadataParts = Split(metadataText, "|")
+    If UBound(metadataParts) <> 1 Then Exit Sub
+    If Not IsNumeric(metadataParts(0)) Or Not IsNumeric(metadataParts(1)) Then Exit Sub
+    originalColor = CLng(metadataParts(0))
+    originalBold = (CLng(metadataParts(1)) <> 0)
+
+    prefixText = Left$(existingText, markerStart - 1)
+    If Right$(prefixText, Len(vbCrLf)) = vbCrLf Then
+        prefixText = Left$(prefixText, Len(prefixText) - Len(vbCrLf))
+    End If
+    suffixText = Mid$(existingText, markerEnd + Len(CHECK_WARNING_END))
+    newText = prefixText & suffixText
+    If target.Font.Color = vbRed And target.Font.Bold = True Then
+        target.Font.Color = originalColor
+        target.Font.Bold = originalBold
+    End If
+    If Len(Trim$(newText)) = 0 Then
+        note.Delete
+    Else
+        note.Text Text:=newText
+    End If
+    Exit Sub
+RemoveFailed:
+    errorCount = errorCount + 1
+    Err.Clear
+End Sub
+
+Private Sub 自動チェック警告を追加(ByVal target As Range, ByVal warningText As String, _
+                                ByRef errorCount As Long)
+    Dim note As Comment
+    Dim existingText As String, newText As String, markerText As String, managedText As String
+    Dim markerStart As Long, headerEnd As Long, markerEnd As Long, metadataStart As Long, bodyStart As Long
+    Dim metadataText As String, metadataParts As Variant, existingWarnings As String
+    Dim originalColor As Long, originalBold As Boolean, createdComment As Boolean
+
+    On Error GoTo AddFailed
+    Set note = target.Comment
+    If note Is Nothing Then
+        target.AddComment
+        Set note = target.Comment
+        createdComment = True
+        existingText = ""
+    Else
+        existingText = note.Text
+    End If
+
+    markerStart = InStr(1, existingText, CHECK_WARNING_START, vbBinaryCompare)
+    If markerStart > 0 Then
+        headerEnd = InStr(markerStart, existingText, "】", vbBinaryCompare)
+        If headerEnd > 0 Then
+            markerEnd = InStr(headerEnd + 1, existingText, CHECK_WARNING_END, vbBinaryCompare)
+            If markerEnd > 0 Then
+                metadataStart = markerStart + Len(CHECK_WARNING_START)
+                metadataText = Mid$(existingText, metadataStart, headerEnd - metadataStart)
+                metadataParts = Split(metadataText, "|")
+                If UBound(metadataParts) = 1 Then
+                    If IsNumeric(metadataParts(0)) And IsNumeric(metadataParts(1)) Then
+                        bodyStart = headerEnd + Len("】") + Len(vbCrLf)
+                        existingWarnings = Mid$(existingText, bodyStart, markerEnd - bodyStart)
+                        If InStr(1, existingWarnings, warningText, vbBinaryCompare) = 0 Then
+                            markerText = Mid$(existingText, markerStart, headerEnd - markerStart + Len("】"))
+                            managedText = markerText & vbCrLf & existingWarnings & vbCrLf & warningText & _
+                                          vbCrLf & CHECK_WARNING_END
+                            newText = Left$(existingText, markerStart - 1) & managedText & _
+                                      Mid$(existingText, markerEnd + Len(CHECK_WARNING_END))
+                            note.Text Text:=newText
+                        End If
+                        target.Font.Color = vbRed
+                        target.Font.Bold = True
+                        Exit Sub
+                    End If
+                End If
+            End If
+        End If
+    End If
+
+    originalColor = CLng(target.Font.Color)
+    originalBold = CBool(target.Font.Bold)
+    markerText = CHECK_WARNING_START & CStr(originalColor) & "|" & _
+                 CStr(Abs(CLng(originalBold))) & "】"
+    managedText = markerText & vbCrLf & warningText & vbCrLf & CHECK_WARNING_END
+    If Len(existingText) > 0 Then
+        newText = existingText & vbCrLf & managedText
+    Else
+        newText = managedText
+    End If
+    note.Text Text:=newText
+    target.Font.Color = vbRed
+    target.Font.Bold = True
+    Exit Sub
+AddFailed:
+    If createdComment Then
+        On Error Resume Next
+        note.Delete
+        On Error GoTo 0
+    End If
+    errorCount = errorCount + 1
+    Err.Clear
+End Sub
+
+Private Sub 車両選択候補をチェック(ByVal ws As Worksheet, ByVal lastRow As Long, _
+                                 ByRef errorCount As Long)
+    Dim vehicleNames() As String, rowVehicleIndex() As Long
+    Dim rowStartDateTime() As Double, rowEndDateTime() As Double, rowTimesValid() As Boolean
+    Dim rowStartMeterValid() As Boolean, rowEndMeterValid() As Boolean
+    Dim rowStartMeter() As Double, rowEndMeter() As Double
+    Dim previousFound() As Boolean, nextFound() As Boolean
+    Dim previousDateTime() As Double, nextDateTime() As Double
+    Dim previousMeterValid() As Boolean, nextMeterValid() As Boolean
+    Dim previousMeter() As Double, nextMeter() As Double
+    Dim vehicleCount As Long, rowNo As Long, otherRow As Long, vehicleIndex As Long, assignedIndex As Long
+    Dim currentVehicle As String, vehicleValue As Variant, currentStart As Double, currentEnd As Double
+    Dim assignedMismatch As Boolean, candidateCount As Long, candidateIndex As Long, warningText As String
+
+    If lastRow < 3 Then Exit Sub
+    ReDim vehicleNames(1 To lastRow - 1)
+    ReDim rowVehicleIndex(1 To lastRow)
+    ReDim rowStartDateTime(1 To lastRow)
+    ReDim rowEndDateTime(1 To lastRow)
+    ReDim rowTimesValid(1 To lastRow)
+    ReDim rowStartMeterValid(1 To lastRow)
+    ReDim rowEndMeterValid(1 To lastRow)
+    ReDim rowStartMeter(1 To lastRow)
+    ReDim rowEndMeter(1 To lastRow)
+
+    For rowNo = 2 To lastRow
+        vehicleValue = ws.Cells(rowNo, "J").Value
+        If Not IsError(vehicleValue) And Not IsEmpty(vehicleValue) Then
+            currentVehicle = Trim$(CStr(vehicleValue))
+            If Len(currentVehicle) > 0 Then
+                For vehicleIndex = 1 To vehicleCount
+                    If StrComp(vehicleNames(vehicleIndex), currentVehicle, vbTextCompare) = 0 Then Exit For
+                Next vehicleIndex
+                If vehicleIndex > vehicleCount Then
+                    vehicleCount = vehicleCount + 1
+                    vehicleNames(vehicleCount) = currentVehicle
+                    vehicleIndex = vehicleCount
+                End If
+                rowVehicleIndex(rowNo) = vehicleIndex
+            End If
+        End If
+
+        rowTimesValid(rowNo) = 日付と時刻を取得(ws.Cells(rowNo, "K").Value, _
+                                             ws.Cells(rowNo, "N").Value, rowStartDateTime(rowNo)) And _
+                               日付と時刻を取得(ws.Cells(rowNo, "K").Value, _
+                                             ws.Cells(rowNo, "O").Value, rowEndDateTime(rowNo))
+        If rowTimesValid(rowNo) Then
+            If rowEndDateTime(rowNo) < rowStartDateTime(rowNo) Then rowTimesValid(rowNo) = False
+        End If
+        rowStartMeterValid(rowNo) = 数値入力あり(ws.Cells(rowNo, "P").Value)
+        rowEndMeterValid(rowNo) = 数値入力あり(ws.Cells(rowNo, "Q").Value)
+        If rowStartMeterValid(rowNo) Then rowStartMeter(rowNo) = CDbl(ws.Cells(rowNo, "P").Value)
+        If rowEndMeterValid(rowNo) Then rowEndMeter(rowNo) = CDbl(ws.Cells(rowNo, "Q").Value)
+    Next rowNo
+    If vehicleCount < 2 Then Exit Sub
+
+    For rowNo = 2 To lastRow
+        assignedIndex = rowVehicleIndex(rowNo)
+        If assignedIndex = 0 Or Not rowTimesValid(rowNo) Or _
+           Not rowStartMeterValid(rowNo) Or Not rowEndMeterValid(rowNo) Then GoTo NextVehicleRecord
+        currentStart = rowStartDateTime(rowNo)
+        currentEnd = rowEndDateTime(rowNo)
+        ReDim previousFound(1 To vehicleCount)
+        ReDim nextFound(1 To vehicleCount)
+        ReDim previousDateTime(1 To vehicleCount)
+        ReDim nextDateTime(1 To vehicleCount)
+        ReDim previousMeterValid(1 To vehicleCount)
+        ReDim nextMeterValid(1 To vehicleCount)
+        ReDim previousMeter(1 To vehicleCount)
+        ReDim nextMeter(1 To vehicleCount)
+
+        For otherRow = 2 To lastRow
+            vehicleIndex = rowVehicleIndex(otherRow)
+            If otherRow <> rowNo And vehicleIndex > 0 And rowTimesValid(otherRow) Then
+                If rowEndDateTime(otherRow) <= currentStart Then
+                    If Not previousFound(vehicleIndex) Or rowEndDateTime(otherRow) > previousDateTime(vehicleIndex) Then
+                        previousFound(vehicleIndex) = True
+                        previousDateTime(vehicleIndex) = rowEndDateTime(otherRow)
+                        previousMeterValid(vehicleIndex) = rowEndMeterValid(otherRow)
+                        If rowEndMeterValid(otherRow) Then previousMeter(vehicleIndex) = rowEndMeter(otherRow)
+                    End If
+                End If
+                If rowStartDateTime(otherRow) >= currentEnd Then
+                    If Not nextFound(vehicleIndex) Or rowStartDateTime(otherRow) < nextDateTime(vehicleIndex) Then
+                        nextFound(vehicleIndex) = True
+                        nextDateTime(vehicleIndex) = rowStartDateTime(otherRow)
+                        nextMeterValid(vehicleIndex) = rowStartMeterValid(otherRow)
+                        If rowStartMeterValid(otherRow) Then nextMeter(vehicleIndex) = rowStartMeter(otherRow)
+                    End If
+                End If
+            End If
+        Next otherRow
+
+        assignedMismatch = False
+        If previousFound(assignedIndex) And previousMeterValid(assignedIndex) Then
+            If Abs(rowStartMeter(rowNo) - previousMeter(assignedIndex)) > CHECK_ODO_TOLERANCE_KM Then assignedMismatch = True
+        End If
+        If nextFound(assignedIndex) And nextMeterValid(assignedIndex) Then
+            If Abs(rowEndMeter(rowNo) - nextMeter(assignedIndex)) > CHECK_ODO_TOLERANCE_KM Then assignedMismatch = True
+        End If
+        If Not assignedMismatch Then GoTo NextVehicleRecord
+
+        candidateCount = 0
+        candidateIndex = 0
+        For vehicleIndex = 1 To vehicleCount
+            If vehicleIndex <> assignedIndex And previousFound(vehicleIndex) And nextFound(vehicleIndex) And _
+               previousMeterValid(vehicleIndex) And nextMeterValid(vehicleIndex) Then
+                If Abs(rowStartMeter(rowNo) - previousMeter(vehicleIndex)) <= CHECK_ODO_TOLERANCE_KM And _
+                   Abs(rowEndMeter(rowNo) - nextMeter(vehicleIndex)) <= CHECK_ODO_TOLERANCE_KM Then
+                    candidateCount = candidateCount + 1
+                    candidateIndex = vehicleIndex
+                End If
+            End If
+        Next vehicleIndex
+
+        If candidateCount = 1 Then
+            warningText = "要確認：車両選択間違いの可能性があります。" & vbCrLf & vbCrLf & _
+                          "登録車両：" & vehicleNames(assignedIndex) & vbCrLf & _
+                          "候補車両：" & vehicleNames(candidateIndex) & vbCrLf & vbCrLf & _
+                          "候補車両の前回終業メーター：" & Format$(previousMeter(candidateIndex), "0.##") & "km" & vbCrLf & _
+                          "今回始業メーター：" & Format$(rowStartMeter(rowNo), "0.##") & "km" & vbCrLf & _
+                          "今回終業メーター：" & Format$(rowEndMeter(rowNo), "0.##") & "km" & vbCrLf & _
+                          "候補車両の次回始業メーター：" & Format$(nextMeter(candidateIndex), "0.##") & "km" & vbCrLf & vbCrLf & _
+                          "候補車両の前後の記録とメーター推移の連続性が高いため、車両選択が正しいか確認してください。"
+            Call 自動チェック警告を追加(ws.Cells(rowNo, "J"), warningText, errorCount)
+        End If
+NextVehicleRecord:
+    Next rowNo
+End Sub
+
 Sub 記録シート整理()
     Dim ws As Worksheet
     Set ws = ThisWorkbook.Sheets("記録")
@@ -162,6 +569,8 @@ Sub 記録シート整理()
         previous車両 = current車両
         previousメーター = ws.Cells(i, "Q").Value
     Next i
+
+    Call 入力内容チェック実行(False)
 
     MsgBox "並び替えと始業時メーターの補完が完了しました。", vbInformation
 End Sub
