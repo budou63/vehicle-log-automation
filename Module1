@@ -1,6 +1,7 @@
 Private Const CHECK_LONG_DISTANCE_KM As Double = 100#
 Private Const CHECK_LONG_USAGE_HOURS As Double = 8#
 Private Const CHECK_ODO_TOLERANCE_KM As Double = 2#
+Private Const CHECK_VEHICLE_SELECTION_ODO_TOLERANCE_KM As Double = 2#
 Private Const CHECK_WARNING_START As String = "【自動入力チェック開始|"
 Private Const CHECK_WARNING_END As String = "【自動入力チェック終了】"
 
@@ -502,9 +503,8 @@ Private Sub 車両選択候補をチェック(ByVal ws As Worksheet, ByVal lastR
                                  ByRef errorCount As Long)
     Dim vehicleNames() As String, rowVehicleIndex() As Long
     Dim rowStartDateTime() As Double, rowEndDateTime() As Double, rowTimesValid() As Boolean
-    Dim rowStartMeterValid() As Boolean, rowEndMeterValid() As Boolean
-    Dim rowStartMeter() As Double, rowEndMeter() As Double
-    Dim previousFound() As Boolean, nextFound() As Boolean
+    Dim rowEndMeterValid() As Boolean, rowEndMeter() As Double
+    Dim previousFound() As Boolean, nextFound() As Boolean, vehicleOverlaps() As Boolean
     Dim previousDateTime() As Double, nextDateTime() As Double
     Dim previousMeterValid() As Boolean, nextMeterValid() As Boolean
     Dim previousMeter() As Double, nextMeter() As Double
@@ -518,9 +518,7 @@ Private Sub 車両選択候補をチェック(ByVal ws As Worksheet, ByVal lastR
     ReDim rowStartDateTime(1 To lastRow)
     ReDim rowEndDateTime(1 To lastRow)
     ReDim rowTimesValid(1 To lastRow)
-    ReDim rowStartMeterValid(1 To lastRow)
     ReDim rowEndMeterValid(1 To lastRow)
-    ReDim rowStartMeter(1 To lastRow)
     ReDim rowEndMeter(1 To lastRow)
 
     For rowNo = 2 To lastRow
@@ -547,21 +545,19 @@ Private Sub 車両選択候補をチェック(ByVal ws As Worksheet, ByVal lastR
         If rowTimesValid(rowNo) Then
             If rowEndDateTime(rowNo) < rowStartDateTime(rowNo) Then rowTimesValid(rowNo) = False
         End If
-        rowStartMeterValid(rowNo) = 数値入力あり(ws.Cells(rowNo, "P").Value)
         rowEndMeterValid(rowNo) = 数値入力あり(ws.Cells(rowNo, "Q").Value)
-        If rowStartMeterValid(rowNo) Then rowStartMeter(rowNo) = CDbl(ws.Cells(rowNo, "P").Value)
         If rowEndMeterValid(rowNo) Then rowEndMeter(rowNo) = CDbl(ws.Cells(rowNo, "Q").Value)
     Next rowNo
     If vehicleCount < 2 Then Exit Sub
 
     For rowNo = 2 To lastRow
         assignedIndex = rowVehicleIndex(rowNo)
-        If assignedIndex = 0 Or Not rowTimesValid(rowNo) Or _
-           Not rowStartMeterValid(rowNo) Or Not rowEndMeterValid(rowNo) Then GoTo NextVehicleRecord
+        If assignedIndex = 0 Or Not rowTimesValid(rowNo) Or Not rowEndMeterValid(rowNo) Then GoTo NextVehicleRecord
         currentStart = rowStartDateTime(rowNo)
         currentEnd = rowEndDateTime(rowNo)
         ReDim previousFound(1 To vehicleCount)
         ReDim nextFound(1 To vehicleCount)
+        ReDim vehicleOverlaps(1 To vehicleCount)
         ReDim previousDateTime(1 To vehicleCount)
         ReDim nextDateTime(1 To vehicleCount)
         ReDim previousMeterValid(1 To vehicleCount)
@@ -572,6 +568,9 @@ Private Sub 車両選択候補をチェック(ByVal ws As Worksheet, ByVal lastR
         For otherRow = 2 To lastRow
             vehicleIndex = rowVehicleIndex(otherRow)
             If otherRow <> rowNo And vehicleIndex > 0 And rowTimesValid(otherRow) Then
+                If rowStartDateTime(otherRow) < currentEnd And rowEndDateTime(otherRow) > currentStart Then
+                    vehicleOverlaps(vehicleIndex) = True
+                End If
                 If rowEndDateTime(otherRow) <= currentStart Then
                     If Not previousFound(vehicleIndex) Or rowEndDateTime(otherRow) > previousDateTime(vehicleIndex) Then
                         previousFound(vehicleIndex) = True
@@ -584,29 +583,29 @@ Private Sub 車両選択候補をチェック(ByVal ws As Worksheet, ByVal lastR
                     If Not nextFound(vehicleIndex) Or rowStartDateTime(otherRow) < nextDateTime(vehicleIndex) Then
                         nextFound(vehicleIndex) = True
                         nextDateTime(vehicleIndex) = rowStartDateTime(otherRow)
-                        nextMeterValid(vehicleIndex) = rowStartMeterValid(otherRow)
-                        If rowStartMeterValid(otherRow) Then nextMeter(vehicleIndex) = rowStartMeter(otherRow)
+                        nextMeterValid(vehicleIndex) = rowEndMeterValid(otherRow)
+                        If rowEndMeterValid(otherRow) Then nextMeter(vehicleIndex) = rowEndMeter(otherRow)
                     End If
                 End If
             End If
         Next otherRow
 
-        assignedMismatch = False
-        If previousFound(assignedIndex) And previousMeterValid(assignedIndex) Then
-            If Abs(rowStartMeter(rowNo) - previousMeter(assignedIndex)) > CHECK_ODO_TOLERANCE_KM Then assignedMismatch = True
-        End If
-        If nextFound(assignedIndex) And nextMeterValid(assignedIndex) Then
-            If Abs(rowEndMeter(rowNo) - nextMeter(assignedIndex)) > CHECK_ODO_TOLERANCE_KM Then assignedMismatch = True
+        assignedMismatch = previousFound(assignedIndex) And nextFound(assignedIndex) And _
+                           previousMeterValid(assignedIndex) And nextMeterValid(assignedIndex)
+        If assignedMismatch Then
+            assignedMismatch = rowEndMeter(rowNo) < previousMeter(assignedIndex) - CHECK_VEHICLE_SELECTION_ODO_TOLERANCE_KM Or _
+                               rowEndMeter(rowNo) > nextMeter(assignedIndex) + CHECK_VEHICLE_SELECTION_ODO_TOLERANCE_KM
         End If
         If Not assignedMismatch Then GoTo NextVehicleRecord
 
         candidateCount = 0
         candidateIndex = 0
         For vehicleIndex = 1 To vehicleCount
-            If vehicleIndex <> assignedIndex And previousFound(vehicleIndex) And nextFound(vehicleIndex) And _
+            If vehicleIndex <> assignedIndex And Not vehicleOverlaps(vehicleIndex) And _
+               previousFound(vehicleIndex) And nextFound(vehicleIndex) And _
                previousMeterValid(vehicleIndex) And nextMeterValid(vehicleIndex) Then
-                If Abs(rowStartMeter(rowNo) - previousMeter(vehicleIndex)) <= CHECK_ODO_TOLERANCE_KM And _
-                   Abs(rowEndMeter(rowNo) - nextMeter(vehicleIndex)) <= CHECK_ODO_TOLERANCE_KM Then
+                If previousMeter(vehicleIndex) <= rowEndMeter(rowNo) + CHECK_VEHICLE_SELECTION_ODO_TOLERANCE_KM And _
+                   rowEndMeter(rowNo) <= nextMeter(vehicleIndex) + CHECK_VEHICLE_SELECTION_ODO_TOLERANCE_KM Then
                     candidateCount = candidateCount + 1
                     candidateIndex = vehicleIndex
                 End If
@@ -615,17 +614,37 @@ Private Sub 車両選択候補をチェック(ByVal ws As Worksheet, ByVal lastR
 
         If candidateCount = 1 Then
             warningText = "要確認：車両選択間違いの可能性があります。" & vbCrLf & vbCrLf & _
+                          "回答番号：" & セル値を表示(ws.Cells(rowNo, "A").Value) & vbCrLf & _
+                          "運転日：" & Format$(Fix(rowStartDateTime(rowNo)), "yyyy/m/d") & vbCrLf & _
+                          "使用時間：" & Format$(rowStartDateTime(rowNo), "hh:mm") & "～" & Format$(rowEndDateTime(rowNo), "hh:mm") & vbCrLf & _
+                          "運転者：" & セル値を表示(ws.Cells(rowNo, "W").Value) & vbCrLf
+            If セルに値がある(ws.Cells(rowNo, "R").Value) Then warningText = warningText & "行先：" & セル値を表示(ws.Cells(rowNo, "R").Value) & vbCrLf
+            If セルに値がある(ws.Cells(rowNo, "T").Value) Then warningText = warningText & "用務：" & セル値を表示(ws.Cells(rowNo, "T").Value) & vbCrLf
+            warningText = warningText & vbCrLf & _
                           "登録車両：" & vehicleNames(assignedIndex) & vbCrLf & _
                           "候補車両：" & vehicleNames(candidateIndex) & vbCrLf & vbCrLf & _
-                          "候補車両の前回終業メーター：" & Format$(previousMeter(candidateIndex), "0.##") & "km" & vbCrLf & _
-                          "今回始業メーター：" & Format$(rowStartMeter(rowNo), "0.##") & "km" & vbCrLf & _
-                          "今回終業メーター：" & Format$(rowEndMeter(rowNo), "0.##") & "km" & vbCrLf & _
-                          "候補車両の次回始業メーター：" & Format$(nextMeter(candidateIndex), "0.##") & "km" & vbCrLf & vbCrLf & _
-                          "候補車両の前後の記録とメーター推移の連続性が高いため、車両選択が正しいか確認してください。"
+                          "【登録車両 " & vehicleNames(assignedIndex) & " のメーター推移】" & vbCrLf & _
+                          Format$(previousMeter(assignedIndex), "0.##") & " → " & Format$(rowEndMeter(rowNo), "0.##") & " → " & Format$(nextMeter(assignedIndex), "0.##") & vbCrLf & vbCrLf & _
+                          "【候補車両 " & vehicleNames(candidateIndex) & " のメーター推移】" & vbCrLf & _
+                          Format$(previousMeter(candidateIndex), "0.##") & " → " & Format$(rowEndMeter(rowNo), "0.##") & " → " & Format$(nextMeter(candidateIndex), "0.##") & vbCrLf & vbCrLf & _
+                          vehicleNames(candidateIndex) & "号車として扱う方がメーター推移と時間関係が自然です。" & vbCrLf & _
+                          "実際に使用した車両を確認してください。"
             Call 自動チェック警告を追加(ws.Cells(rowNo, "J"), warningText, errorCount)
         End If
 NextVehicleRecord:
     Next rowNo
+End Sub
+
+Private Sub 車両選択候補の事前チェック(ByVal ws As Worksheet, ByVal lastRow As Long)
+    Dim rowNo As Long, commentFailures As Long
+    For rowNo = 2 To lastRow
+        Call セルの自動チェック警告を除去(ws.Cells(rowNo, "J"), commentFailures)
+    Next rowNo
+    Call 車両選択候補をチェック(ws, lastRow, commentFailures)
+    If commentFailures > 0 Then
+        MsgBox "車両選択候補の事前チェックで、" & commentFailures & _
+               "セルの警告コメントまたは既存コメントを処理できませんでした。該当セルを確認してください。", vbExclamation
+    End If
 End Sub
 
 Sub 記録シート整理()
@@ -638,6 +657,9 @@ Sub 記録シート整理()
         MsgBox "データが不足しています。", vbExclamation
         Exit Sub
     End If
+
+    ' P列を誤った登録車両の前回Qで補完する前に、Q列と日時だけで候補を確認する。
+    Call 車両選択候補の事前チェック(ws, lastRow)
 
     ' 並び替え（2行目から）
     With ws.Sort
