@@ -15,6 +15,10 @@ Private Sub CommandButton4_Click()
 Call 一括消去
 End Sub
 
+Private Sub CommandButton5_Click()
+Call 入力内容チェック
+End Sub
+
 Private Sub UserForm_Click()
 
 End Sub

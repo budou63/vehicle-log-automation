@@ -240,8 +240,24 @@ Private Function セル値を表示(ByVal cellValue As Variant) As String
 End Function
 
 Private Function 時刻を取得(ByVal cellValue As Variant, ByRef timeFraction As Double) As Boolean
+    Dim numericValue As Double
     On Error GoTo InvalidTime
     If IsError(cellValue) Or IsEmpty(cellValue) Then Exit Function
+
+    If VarType(cellValue) = vbDate Then
+        timeFraction = CDbl(TimeValue(CDate(cellValue)))
+        時刻を取得 = True
+        Exit Function
+    End If
+
+    If VarType(cellValue) <> vbString And IsNumeric(cellValue) Then
+        numericValue = CDbl(cellValue)
+        If numericValue < 0# Or numericValue >= 2958466# Then Exit Function
+        timeFraction = numericValue - Fix(numericValue)
+        時刻を取得 = True
+        Exit Function
+    End If
+
     If Len(Trim$(CStr(cellValue))) = 0 Then Exit Function
     If Not IsDate(cellValue) Then Exit Function
     timeFraction = CDbl(TimeValue(CDate(cellValue)))
