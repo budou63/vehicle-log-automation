@@ -34,14 +34,14 @@ def levenshtein_one(left, right):
     return previous[-1] == 1
 
 
-def classify_driver(value, master_names):
+def classify_driver(value, master_names=None, exact_counts=None, normalized_counts=None, variants=None, representatives=None):
     raw = str(value)
     trimmed = trim_edges(raw)
     compact = remove_spaces(trimmed)
     issues = []
     if raw != trimmed:
         issues.append("leading_trailing_space")
-    if (" " in raw and "\u3000" in raw) or re.search(r"[ \u3000]{2,}", raw):
+    if (" " in raw and "　" in raw) or re.search(r"[ \u3000]{2,}", raw):
         issues.append("space_format")
     if any(c in BAD_NAME_CHARS for c in raw):
         issues.append("bad_character")
@@ -50,22 +50,69 @@ def classify_driver(value, master_names):
     if not compact:
         return issues
 
-    trimmed_master = [trim_edges(name) for name in master_names if remove_spaces(trim_edges(name))]
-    exact = [name for name in trimmed_master if trimmed == name]
-    spacing = [name for name in trimmed_master if remove_spaces(name) == compact]
-    if exact:
+    exact_counts = exact_counts or {raw: 1}
+    normalized_counts = normalized_counts or {compact: 1}
+    variants = variants or {compact: {raw: exact_counts.get(raw, 1)}}
+    representatives = representatives or {compact: raw}
+    trimmed_master = [trim_edges(name) for name in (master_names or []) if remove_spaces(trim_edges(name))]
+    if trimmed in trimmed_master:
         return issues
-    if spacing:
-        issues.append("spacing_difference")
-        return issues
-    near = sorted({name for name in trimmed_master if levenshtein_one(compact, remove_spaces(name))})
-    if len(near) == 1:
-        issues.append("near:" + near[0])
-    elif len(near) > 1:
-        issues.append("near_multiple")
-    else:
-        issues.append("new_name")
+    current_count = exact_counts.get(raw, 1)
+    if current_count == 1:
+        frequent_spacing = [name for name, count in variants.get(compact, {}).items() if name != raw and count >= 2]
+        if frequent_spacing:
+            issues.append("history_spacing")
+        near = sorted(
+            representatives[other]
+            for other, count in normalized_counts.items()
+            if other != compact and count >= 2 and normalized_counts.get(compact, current_count) < count and levenshtein_one(compact, other)
+        )
+        if len(near) == 1:
+            issues.append("history_near:" + near[0])
+        elif len(near) > 1:
+            issues.append("history_near_multiple")
+
+    if master_names:
+        trimmed_master = [trim_edges(name) for name in master_names if remove_spaces(trim_edges(name))]
+        exact = [name for name in trimmed_master if trimmed == name]
+        spacing = [name for name in trimmed_master if remove_spaces(name) == compact]
+        if not exact:
+            if spacing:
+                issues.append("master_spacing_difference")
+            else:
+                near_master = sorted({name for name in trimmed_master if levenshtein_one(compact, remove_spaces(name))})
+                if len(near_master) == 1:
+                    issues.append("master_near:" + near_master[0])
+                elif len(near_master) > 1:
+                    issues.append("master_near_multiple")
+                else:
+                    issues.append("new_name")
     return issues
+
+
+def classify_driver_history(values, master_names=None):
+    exact_counts = {}
+    normalized_counts = {}
+    variants = {}
+    order = {}
+    for value in values:
+        raw = str(value)
+        if not remove_spaces(trim_edges(raw)):
+            continue
+        compact = remove_spaces(trim_edges(raw))
+        exact_counts[raw] = exact_counts.get(raw, 0) + 1
+        normalized_counts[compact] = normalized_counts.get(compact, 0) + 1
+        variants.setdefault(compact, {})[raw] = variants.setdefault(compact, {}).get(raw, 0) + 1
+        order.setdefault(compact, [])
+        if raw not in order[compact]:
+            order[compact].append(raw)
+    representatives = {}
+    for compact, forms in variants.items():
+        representatives[compact] = max(order[compact], key=lambda name: forms[name])
+    return {
+        str(value): classify_driver(value, master_names, exact_counts, normalized_counts, variants, representatives)
+        for value in values if remove_spaces(trim_edges(str(value)))
+    }
 
 
 def same_vehicle_date_warnings(tickets, records):
@@ -200,6 +247,44 @@ class FuelWarningLogicTests(unittest.TestCase):
 
 
 class DriverNameLogicTests(unittest.TestCase):
+    def test_history_without_master_does_not_warn_on_a_normal_first_name(self):
+        issues = classify_driver_history(["田中次郎"])["田中次郎"]
+        self.assertEqual(issues, [])
+
+    def test_exact_master_name_is_not_overruled_by_rare_history(self):
+        issues = classify_driver_history(["山田 太郎"] * 5 + ["山田太郎"], ["山田太郎"])
+        self.assertEqual(issues["山田太郎"], [])
+
+    def test_exact_master_match_precedes_history_frequency_warnings(self):
+        checker = procedure(MODULE_SOURCE, "運転者名警告一覧", "Function")
+        self.assertIn("exactMasterMatch", checker)
+        self.assertLess(checker.index("If exactMasterMatch Then"), checker.index("If currentCount = 1"))
+
+    def test_history_spacing_warns_only_singleton_variant(self):
+        issues = classify_driver_history(["山田 太郎"] * 5 + ["山田太郎"])
+        self.assertNotIn("history_spacing", issues["山田 太郎"])
+        self.assertIn("history_spacing", issues["山田太郎"])
+
+    def test_history_one_character_near_warns_only_singleton_variant(self):
+        issues = classify_driver_history(["山田太郎"] * 5 + ["山田太朗"])
+        self.assertFalse(any(item.startswith("history_near") for item in issues["山田太郎"]))
+        self.assertIn("history_near:山田太郎", issues["山田太朗"])
+
+    def test_history_near_comparison_uses_compact_group_frequency_too(self):
+        values = ["山田太郎"] * 2 + ["山田太朗"] + ["山田 太朗"] * 2
+        issues = classify_driver_history(values)
+        self.assertFalse(any(item.startswith("history_near") for item in issues["山田太朗"]))
+
+    def test_equal_frequency_near_names_do_not_warn(self):
+        issues = classify_driver_history(["山田太郎", "山田太朗"])
+        self.assertFalse(any(item.startswith("history_near") for row in issues.values() for item in row))
+
+    def test_history_threshold_requires_singleton_target_and_two_common_entries(self):
+        two_target = classify_driver_history(["山田太郎"] * 3 + ["山田太朗"] * 2)
+        self.assertFalse(any(item.startswith("history_near") for row in two_target.values() for item in row))
+        one_common = classify_driver_history(["山田太郎", "山田太朗"])
+        self.assertFalse(any(item.startswith("history_near") for row in one_common.values() for item in row))
+
     def test_exact_match_has_no_warning(self):
         self.assertEqual(classify_driver("山田太郎", ["山田太郎"]), [])
 
@@ -207,12 +292,12 @@ class DriverNameLogicTests(unittest.TestCase):
         self.assertIn("new_name", classify_driver("佐藤花子", ["山田太郎"]))
 
     def test_half_and_full_width_space_spelling_variants_are_flagged(self):
-        self.assertIn("spacing_difference", classify_driver("山田太郎", ["山田 太郎"]))
-        self.assertIn("spacing_difference", classify_driver("山田　太郎", ["山田太郎"]))
+        self.assertIn("master_spacing_difference", classify_driver("山田太郎", ["山田 太郎"]))
+        self.assertIn("master_spacing_difference", classify_driver("山田　太郎", ["山田太郎"]))
 
     def test_one_character_substitution_is_near_match(self):
-        self.assertIn("near:山田太郎", classify_driver("山田太朗", ["山田太郎"]))
-        self.assertIn("near:高橋一郎", classify_driver("髙橋一郎", ["高橋一郎"]))
+        self.assertIn("master_near:山田太郎", classify_driver("山田太朗", ["山田太郎"]))
+        self.assertIn("master_near:高橋一郎", classify_driver("髙橋一郎", ["高橋一郎"]))
 
     def test_one_character_insertion_or_deletion_is_near_match(self):
         self.assertTrue(levenshtein_one("山田三郎", "山田三郎一"))
@@ -221,8 +306,8 @@ class DriverNameLogicTests(unittest.TestCase):
 
     def test_multiple_near_names_are_not_resolved_to_one(self):
         result = classify_driver("山田太郎", ["山田太朗", "山田大郎"])
-        self.assertIn("near_multiple", result)
-        self.assertFalse(any(item.startswith("near:") for item in result))
+        self.assertIn("master_near_multiple", result)
+        self.assertFalse(any(item.startswith("master_near:") for item in result))
 
     def test_half_width_edge_space_is_flagged(self):
         self.assertIn("leading_trailing_space", classify_driver(" 山田太郎 ", ["山田太郎"]))
@@ -259,10 +344,17 @@ class DriverNameLogicTests(unittest.TestCase):
         self.assertIn("Public Sub 運転者名マスタを初期作成()", MODULE_SOURCE)
         self.assertNotRegex(MODULE_SOURCE, r'(?im)^\s*ws\.Cells\([^\n]*,\s*"W"\)\.Value\s*=')
 
-    def test_missing_master_warns_once_and_does_not_skip_later_steps(self):
+    def test_missing_master_has_no_popup_and_history_check_keeps_running(self):
         public = procedure(MODULE_SOURCE, "入力内容チェック")
+        checker = procedure(MODULE_SOURCE, "運転者氏名をチェック", "Sub")
         self.assertIn("運転者氏名をチェック", public)
-        self.assertIn("運転者名マスタが未作成です", MODULE_SOURCE)
+        self.assertNotIn("運転者名マスタが未作成です", MODULE_SOURCE)
+        self.assertNotIn("MasterMissing:", checker)
+        self.assertIn("記録", checker)
+        self.assertIn("運転者名警告一覧", checker)
+        self.assertIn("exactCounts", checker)
+        self.assertIn("normalizedCounts", checker)
+        self.assertIn("運転者名の編集距離", procedure(MODULE_SOURCE, "運転者名警告一覧", "Function"))
         self.assertLess(public.index("運転者氏名をチェック"), public.index("給油記録を照合実行(False)"))
         self.assertLess(public.index("給油記録を照合実行(False)"), public.index("車両候補確認画面を表示"))
 

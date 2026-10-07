@@ -275,9 +275,10 @@ Failed:
 End Sub
 
 Private Sub 運転者氏名をチェック()
-    Dim ws As Worksheet, masterWS As Worksheet, names As Collection
+    Dim ws As Worksheet, masterWS As Worksheet, masterNames As Collection
+    Dim exactCounts As Object, normalizedCounts As Object, variantsByName As Object, nameVariants As Object
     Dim lastRow As Long, lastNameRow As Long, rowNo As Long, errorCount As Long
-    Dim rawValue As Variant, driverName As String, warning As Variant
+    Dim rawValue As Variant, driverName As String, compactName As String, warning As Variant
     Dim driverWarnings As Collection
 
     On Error GoTo Failed
@@ -288,20 +289,59 @@ Private Sub 運転者氏名をチェック()
         Call セルの自動チェック警告カテゴリを除去(ws.Cells(rowNo, "W"), errorCount, "運転者名警告")
     Next rowNo
 
+    Set exactCounts = CreateObject("Scripting.Dictionary")
+    exactCounts.CompareMode = vbBinaryCompare
+    Set normalizedCounts = CreateObject("Scripting.Dictionary")
+    normalizedCounts.CompareMode = vbBinaryCompare
+    Set variantsByName = CreateObject("Scripting.Dictionary")
+    variantsByName.CompareMode = vbBinaryCompare
+
+    For rowNo = 2 To lastRow
+        rawValue = ws.Cells(rowNo, "W").Value
+        If Not IsError(rawValue) And Not IsEmpty(rawValue) Then
+            driverName = CStr(rawValue)
+            compactName = 運転者名の空白を除去(driverName)
+            If Len(compactName) > 0 Then
+                If exactCounts.Exists(driverName) Then
+                    exactCounts(driverName) = CLng(exactCounts(driverName)) + 1
+                Else
+                    exactCounts.Add driverName, 1
+                End If
+                If normalizedCounts.Exists(compactName) Then
+                    normalizedCounts(compactName) = CLng(normalizedCounts(compactName)) + 1
+                Else
+                    normalizedCounts.Add compactName, 1
+                End If
+                If variantsByName.Exists(compactName) Then
+                    Set nameVariants = variantsByName(compactName)
+                Else
+                    Set nameVariants = CreateObject("Scripting.Dictionary")
+                    nameVariants.CompareMode = vbBinaryCompare
+                    variantsByName.Add compactName, nameVariants
+                End If
+                If nameVariants.Exists(driverName) Then
+                    nameVariants(driverName) = CLng(nameVariants(driverName)) + 1
+                Else
+                    nameVariants.Add driverName, 1
+                End If
+            End If
+        End If
+    Next rowNo
+
+    Set masterNames = New Collection
     On Error Resume Next
     Set masterWS = ThisWorkbook.Worksheets("運転者名マスタ")
     On Error GoTo Failed
-    If masterWS Is Nothing Then GoTo MasterMissing
-    lastNameRow = masterWS.Cells(masterWS.Rows.Count, "A").End(xlUp).Row
-    Set names = New Collection
-    For rowNo = 2 To lastNameRow
-        rawValue = masterWS.Cells(rowNo, "A").Value
-        If Not IsError(rawValue) And Not IsEmpty(rawValue) Then
-            driverName = 運転者名の前後空白を除去(CStr(rawValue))
-            If Len(driverName) > 0 Then names.Add driverName
-        End If
-    Next rowNo
-    If names.Count = 0 Then GoTo MasterMissing
+    If Not masterWS Is Nothing Then
+        lastNameRow = masterWS.Cells(masterWS.Rows.Count, "A").End(xlUp).Row
+        For rowNo = 2 To lastNameRow
+            rawValue = masterWS.Cells(rowNo, "A").Value
+            If Not IsError(rawValue) And Not IsEmpty(rawValue) Then
+                driverName = 運転者名の前後空白を除去(CStr(rawValue))
+                If Len(driverName) > 0 Then masterNames.Add driverName
+            End If
+        Next rowNo
+    End If
 
     For rowNo = 2 To lastRow
         rawValue = ws.Cells(rowNo, "W").Value
@@ -310,7 +350,7 @@ Private Sub 運転者氏名をチェック()
         ElseIf Not IsEmpty(rawValue) Then
             driverName = CStr(rawValue)
             If Len(運転者名の前後空白を除去(driverName)) > 0 Then
-                Set driverWarnings = 運転者名警告一覧(driverName, names)
+                Set driverWarnings = 運転者名警告一覧(driverName, masterNames, exactCounts, normalizedCounts, variantsByName)
                 For Each warning In driverWarnings
                     Call 自動チェック警告を追加(ws.Cells(rowNo, "W"), CStr(warning), errorCount, "運転者名警告")
                 Next warning
@@ -319,20 +359,20 @@ Private Sub 運転者氏名をチェック()
     Next rowNo
     If errorCount > 0 Then MsgBox "運転者名警告の" & errorCount & "セルでコメントまたは書式を処理できませんでした。確認してください。", vbExclamation
     Exit Sub
-MasterMissing:
-    MsgBox "運転者名マスタが未作成です。" & vbCrLf & _
-           "Alt+F8から「運転者名マスタを初期作成」を実行し、内容を確認してください。", vbExclamation
-    Exit Sub
 Failed:
     MsgBox "運転者氏名チェックを中止しました。" & Err.Description, vbExclamation
     Err.Clear
 End Sub
 
-Private Function 運転者名警告一覧(ByVal enteredName As String, ByVal masterNames As Collection) As Collection
-    Dim warnings As New Collection, exactFound As Boolean, trimmedName As String, compactName As String
-    Dim masterName As Variant, masterTrimmed As String, compactMaster As String
-    Dim spacingMatches As Object, nearMatches As Object, characterValue As String
-    Dim i As Long, hasHalfSpace As Boolean, hasFullSpace As Boolean, invalidCharacters As String
+Private Function 運転者名警告一覧(ByVal enteredName As String, ByVal masterNames As Collection, _
+                                    ByVal exactCounts As Object, ByVal normalizedCounts As Object, _
+                                    ByVal variantsByName As Object) As Collection
+    Dim warnings As New Collection, trimmedName As String, compactName As String
+    Dim masterName As Variant, otherName As Variant, otherCompact As Variant
+    Dim masterTrimmed As String, compactMaster As String, characterValue As String
+    Dim spacingMatches As Object, masterNearMatches As Object, historyNearMatches As Object
+    Dim nameVariants As Object, currentCount As Long, i As Long, exactMasterMatch As Boolean
+    Dim hasHalfSpace As Boolean, hasFullSpace As Boolean, invalidCharacters As String
 
     trimmedName = 運転者名の前後空白を除去(enteredName)
     compactName = 運転者名の空白を除去(trimmedName)
@@ -358,27 +398,69 @@ Private Function 運転者名警告一覧(ByVal enteredName As String, ByVal mas
         Exit Function
     End If
 
-    Set spacingMatches = CreateObject("Scripting.Dictionary")
-    Set nearMatches = CreateObject("Scripting.Dictionary")
-    For Each masterName In masterNames
-        masterTrimmed = 運転者名の前後空白を除去(CStr(masterName))
-        compactMaster = 運転者名の空白を除去(masterTrimmed)
-        If trimmedName = masterTrimmed Then exactFound = True
-        If compactName = compactMaster Then spacingMatches(masterTrimmed) = True
-        If 運転者名の編集距離(compactName, compactMaster) = 1 Then nearMatches(masterTrimmed) = True
-    Next masterName
-    If Not exactFound Then
+    If masterNames.Count > 0 Then
+        For Each masterName In masterNames
+            masterTrimmed = 運転者名の前後空白を除去(CStr(masterName))
+            If trimmedName = masterTrimmed Then
+                exactMasterMatch = True
+                Exit For
+            End If
+        Next masterName
+    End If
+    If exactMasterMatch Then
+        Set 運転者名警告一覧 = warnings
+        Exit Function
+    End If
+
+    If exactCounts.Exists(enteredName) Then currentCount = CLng(exactCounts(enteredName))
+    If currentCount = 1 And variantsByName.Exists(compactName) Then
+        Set nameVariants = variantsByName(compactName)
+        For Each otherName In nameVariants.Keys
+            If CStr(otherName) <> enteredName And CLng(nameVariants(otherName)) >= 2 Then
+                warnings.Add "要確認：同じ氏名と思われる別の空白表記が多く使われています。"
+                Exit For
+            End If
+        Next otherName
+
+        Set historyNearMatches = CreateObject("Scripting.Dictionary")
+        For Each otherCompact In normalizedCounts.Keys
+            If CStr(otherCompact) <> compactName And CLng(normalizedCounts(otherCompact)) >= 2 And _
+               CLng(normalizedCounts(compactName)) < CLng(normalizedCounts(otherCompact)) Then
+                If 運転者名の編集距離(compactName, CStr(otherCompact)) = 1 Then
+                    historyNearMatches(CStr(otherCompact)) = 運転者名の履歴代表表記(CStr(otherCompact), variantsByName)
+                End If
+            End If
+        Next otherCompact
+        If historyNearMatches.Count = 1 Then
+            For Each otherCompact In historyNearMatches.Keys
+                warnings.Add "要確認：過去によく使われている「" & CStr(historyNearMatches(otherCompact)) & _
+                             "」に近い運転者名です。漢字・入力内容を確認してください。"
+            Next otherCompact
+        ElseIf historyNearMatches.Count > 1 Then
+            warnings.Add "要確認：過去によく使われている複数の運転者名に近い表記です。漢字・入力内容を確認してください。"
+        End If
+    End If
+
+    If masterNames.Count > 0 Then
+        Set spacingMatches = CreateObject("Scripting.Dictionary")
+        Set masterNearMatches = CreateObject("Scripting.Dictionary")
+        For Each masterName In masterNames
+            masterTrimmed = 運転者名の前後空白を除去(CStr(masterName))
+            compactMaster = 運転者名の空白を除去(masterTrimmed)
+            If compactName = compactMaster Then spacingMatches(masterTrimmed) = True
+            If 運転者名の編集距離(compactName, compactMaster) = 1 Then masterNearMatches(masterTrimmed) = True
+        Next masterName
         If spacingMatches.Count = 1 Then
             For Each masterName In spacingMatches.Keys
                 warnings.Add "要確認：登録済みの「" & CStr(masterName) & "」と空白表記が異なります。"
             Next masterName
         ElseIf spacingMatches.Count > 1 Then
             warnings.Add "要確認：空白表記が異なる登録済みの複数名が候補です。"
-        ElseIf nearMatches.Count = 1 Then
-            For Each masterName In nearMatches.Keys
+        ElseIf masterNearMatches.Count = 1 Then
+            For Each masterName In masterNearMatches.Keys
                 warnings.Add "要確認：登録済みの「" & CStr(masterName) & "」に近い運転者名です。漢字・入力内容を確認してください。"
             Next masterName
-        ElseIf nearMatches.Count > 1 Then
+        ElseIf masterNearMatches.Count > 1 Then
             warnings.Add "要確認：登録済みの複数の運転者名に似ています。"
         Else
             warnings.Add "要確認：運転者名マスタにない初登場の名前です。正しい新規運転者であれば、確認後に運転者名マスタへ追加してください。"
@@ -386,6 +468,22 @@ Private Function 運転者名警告一覧(ByVal enteredName As String, ByVal mas
     End If
     Set 運転者名警告一覧 = warnings
 End Function
+
+Private Function 運転者名の履歴代表表記(ByVal compactName As String, ByVal variantsByName As Object) As String
+    Dim variants As Object, nameValue As Variant, highestCount As Long, tied As Boolean
+    Set variants = variantsByName(compactName)
+    For Each nameValue In variants.Keys
+        If CLng(variants(nameValue)) > highestCount Then
+            highestCount = CLng(variants(nameValue))
+            運転者名の履歴代表表記 = CStr(nameValue)
+            tied = False
+        ElseIf CLng(variants(nameValue)) = highestCount Then
+            tied = True
+        End If
+    Next nameValue
+    If tied Then 運転者名の履歴代表表記 = compactName
+End Function
+
 
 Private Function 運転者名の前後空白を除去(ByVal sourceName As String) As String
     Dim firstPosition As Long, lastPosition As Long, currentChar As String
