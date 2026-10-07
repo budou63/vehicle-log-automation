@@ -1846,7 +1846,6 @@ Sub 転記to印刷様式()
                         With halfFuelShape
                             .Name = "FuelRemainHalf_" & CStr(fuelCell.Row)
                             .Placement = xlMoveAndSize
-                            .PrintObject = True
                             .Fill.Visible = msoTrue
                             .Fill.Solid
                             .Fill.ForeColor.RGB = RGB(0, 0, 0)
