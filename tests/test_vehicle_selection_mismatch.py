@@ -137,18 +137,21 @@ class VehicleSelectionMismatchTests(unittest.TestCase):
         body = section.group(0)
         self.assertNotIn('"P"', body)
         for required in (
-            '"Q"', '"J"', '"K"', '"N"', '"O"', '"W"',
-            "vehicleOverlaps", "回答番号：", "運転日：", "使用時間：", "運転者：",
+            '記録列番号(ws, "回答番号")', '記録列番号(ws, "車両番号")',
+            '記録列番号(ws, "運転した日")', '記録列番号(ws, "使用時間（始）")',
+            '記録列番号(ws, "使用時間（終）")', '記録列番号(ws, "終業時メーター(km)")',
+            "CHECK_VEHICLE_SELECTION_ODO_TOLERANCE_KM", "vehicleOverlaps", "candidateCount = 1",
+            "回答番号：", "運転日：", "使用時間：", "運転者：",
             "登録車両", "候補車両", "登録車両 ", "候補車両 ",
         ):
             self.assertIn(required, body)
 
     def test_record_sheet_organize_checks_candidates_before_p_is_filled(self):
         source = MODULE.read_text(encoding="utf-8")
-        organize = re.search(r"Private Sub 記録シート整理を実行.*?^End Sub", source, re.MULTILINE | re.DOTALL)
+        organize = re.search(r"Private Function 記録シート整理を実行.*?^End Function", source, re.MULTILINE | re.DOTALL)
         self.assertIsNotNone(organize)
         body = organize.group(0)
-        self.assertLess(body.index("車両選択候補の事前チェック"), body.index('Cells(i, "P").Value'))
+        self.assertLess(body.index("車両選択候補の事前チェック"), body.index("startMeterColumn).Value"))
 
 
 if __name__ == "__main__":

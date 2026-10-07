@@ -53,7 +53,7 @@ Sub CSV取込()
         Exit Sub
     End If
 
-    Dim i As Long, j As Long, targetRow As Long
+    Dim i As Long, targetRow As Long
     Dim id As Variant, idKey As String
     Dim insertedCount As Long, historyFailureCount As Long
     Dim firstInsertedRow As Long, lastInsertedRow As Long
@@ -63,14 +63,13 @@ Sub CSV取込()
         idKey = 回答番号をキー化(id)
         If Len(idKey) > 0 Then
             If Not historyIDs.Exists(idKey) Then
-                targetRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row + 1
+                targetRow = 記録最終行(ws) + 1
                 If targetRow < 2 Then targetRow = 2
-                For j = 1 To 15
-                    ws.Cells(targetRow, j).Value = csvWS.Cells(i, j).Value
-                Next j
-                For j = 16 To 40
-                    ws.Cells(targetRow, j + 1).Value = csvWS.Cells(i, j).Value
-                Next j
+                If Not CSV行を記録へ追加(csvWS, i, ws, targetRow) Then
+                    MsgBox "CSV見出しを記録シートの列へ対応付けできないため、取込を中止しました。", vbExclamation
+                    csvWB.Close False
+                    Exit Sub
+                End If
                 insertedCount = insertedCount + 1
                 If firstInsertedRow = 0 Then firstInsertedRow = targetRow
                 lastInsertedRow = targetRow
@@ -84,7 +83,6 @@ Sub CSV取込()
     csvWB.Close False
 
     If insertedCount > 0 Then
-        Dim headerRow As Long: headerRow = 1
         Dim lastRow As Long: lastRow = lastInsertedRow
         Dim keyPairs As Variant
         keyPairs = Array( _
@@ -96,11 +94,8 @@ Sub CSV取込()
         )
         Dim mainCol As Long, subCol As Long, k As Long
         For k = LBound(keyPairs) To UBound(keyPairs)
-            mainCol = 0: subCol = 0
-            For j = 1 To ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
-                If ws.Cells(headerRow, j).Value = keyPairs(k)(0) Then mainCol = j
-                If ws.Cells(headerRow, j).Value = keyPairs(k)(1) Then subCol = j
-            Next j
+            mainCol = 記録列番号(ws, CStr(keyPairs(k)(0)))
+            subCol = 記録列番号(ws, CStr(keyPairs(k)(1)))
             If mainCol = 0 Or subCol = 0 Then
                 MsgBox "列が見つかりません：" & vbCrLf & _
                        "主項目: " & keyPairs(k)(0) & vbCrLf & _
@@ -121,11 +116,8 @@ Sub CSV取込()
             Array("確認者（運転後） [「運行管理者」＝主管課長]", "確認者運転後（その他）") _
         )
         For k = LBound(deleteOnlyPairs) To UBound(deleteOnlyPairs)
-            mainCol = 0: subCol = 0
-            For j = 1 To ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
-                If ws.Cells(headerRow, j).Value = deleteOnlyPairs(k)(0) Then mainCol = j
-                If ws.Cells(headerRow, j).Value = deleteOnlyPairs(k)(1) Then subCol = j
-            Next j
+            mainCol = 記録列番号(ws, CStr(deleteOnlyPairs(k)(0)))
+            subCol = 記録列番号(ws, CStr(deleteOnlyPairs(k)(1)))
             If mainCol = 0 Or subCol = 0 Then
                 MsgBox "列が見つかりません（削除対象）：" & vbCrLf & _
                        "主項目: " & deleteOnlyPairs(k)(0) & vbCrLf & _
@@ -159,11 +151,89 @@ InvalidAnswerId:
     回答番号をキー化 = ""
 End Function
 
+Private Function CSV行を記録へ追加(ByVal csvWS As Worksheet, ByVal sourceRow As Long, _
+                                  ByVal recordWS As Worksheet, ByVal targetRow As Long) As Boolean
+    Dim sourceHeaderRow As Long, sourceLastColumn As Long, dataLastColumn As Long, sourceColumn As Long
+    Dim answerColumn As Long, checkColumn As Long, targetColumn As Long, sourceAnswerColumn As Long
+    Dim headerValue As Variant, sourceAnswer As Variant, recordAnswer As Variant
+    Dim targetColumns() As Long, mappedTargets As Object
+    Dim lastRecordColumn As Long, existingLastRow As Long, appendRowSafe As Boolean
+
+    On Error GoTo CopyFailed
+    sourceHeaderRow = 2
+    answerColumn = 記録列番号(recordWS, "回答番号")
+    checkColumn = 記録列番号(recordWS, "チェック")
+    If answerColumn = 0 Or checkColumn = 0 Then Exit Function
+    existingLastRow = 記録最終行(recordWS)
+    If targetRow <= existingLastRow Then Exit Function
+    appendRowSafe = True
+    If recordWS.Cells(targetRow, checkColumn).HasFormula Or _
+       セルに値がある(recordWS.Cells(targetRow, checkColumn).Value) Then Exit Function
+
+    sourceLastColumn = csvWS.Cells(sourceHeaderRow, csvWS.Columns.Count).End(xlToLeft).Column
+    dataLastColumn = csvWS.Cells(sourceRow, csvWS.Columns.Count).End(xlToLeft).Column
+    If dataLastColumn > sourceLastColumn Then sourceLastColumn = dataLastColumn
+    ReDim targetColumns(1 To sourceLastColumn)
+    Set mappedTargets = CreateObject("Scripting.Dictionary")
+
+    For sourceColumn = 1 To sourceLastColumn
+        headerValue = csvWS.Cells(sourceHeaderRow, sourceColumn).Value
+        If IsError(headerValue) Then Exit Function
+        If IsEmpty(headerValue) Or Len(Trim$(CStr(headerValue))) = 0 Then
+            If セルに値がある(csvWS.Cells(sourceRow, sourceColumn).Value) Then Exit Function
+        Else
+            targetColumn = 記録列番号(recordWS, Trim$(CStr(headerValue)))
+            If targetColumn = 0 Or targetColumn = checkColumn Then Exit Function
+            If mappedTargets.Exists(CStr(targetColumn)) Then Exit Function
+            mappedTargets.Add CStr(targetColumn), True
+            targetColumns(sourceColumn) = targetColumn
+            If targetColumn = answerColumn Then sourceAnswerColumn = sourceColumn
+        End If
+    Next sourceColumn
+    If sourceAnswerColumn <> 1 Then Exit Function
+
+    sourceAnswer = csvWS.Cells(sourceRow, sourceAnswerColumn).Value
+    For sourceColumn = 1 To sourceLastColumn
+        targetColumn = targetColumns(sourceColumn)
+        If targetColumn > 0 Then
+            recordWS.Cells(targetRow, targetColumn).Value = csvWS.Cells(sourceRow, sourceColumn).Value
+        End If
+    Next sourceColumn
+    recordAnswer = recordWS.Cells(targetRow, answerColumn).Value
+    If 回答番号をキー化(sourceAnswer) = "" Or _
+       回答番号をキー化(recordAnswer) <> 回答番号をキー化(sourceAnswer) Then GoTo CopyFailed
+
+    CSV行を記録へ追加 = True
+    Exit Function
+CopyFailed:
+    lastRecordColumn = 記録最終列(recordWS)
+    If appendRowSafe And lastRecordColumn >= 2 Then
+        recordWS.Range(recordWS.Cells(targetRow, 2), recordWS.Cells(targetRow, lastRecordColumn)).ClearContents
+    End If
+    Err.Clear
+End Function
+
+Private Function 回答番号行を検索(ByVal ws As Worksheet, ByVal answerNumber As String) As Long
+    Dim answerColumn As Long, lastRow As Long, rowNo As Long, matches As Long, foundRow As Long
+    answerColumn = 記録列番号(ws, "回答番号")
+    If answerColumn = 0 Then Exit Function
+    lastRow = 記録最終行(ws)
+    For rowNo = 2 To lastRow
+        If 回答番号をキー化(ws.Cells(rowNo, answerColumn).Value) = answerNumber Then
+            matches = matches + 1
+            foundRow = rowNo
+        End If
+    Next rowNo
+    If matches = 1 Then 回答番号行を検索 = foundRow
+End Function
+
 Private Function 取込履歴を準備(ByVal recordWS As Worksheet, ByVal historyWS As Worksheet, _
                               ByVal historyIDs As Object) As Boolean
     Dim headerValue As Variant, answerId As Variant, answerKey As String
-    Dim lastHistoryRow As Long, lastRecordRow As Long, rowNo As Long
+    Dim lastHistoryRow As Long, lastRecordRow As Long, rowNo As Long, answerColumn As Long
     On Error GoTo PrepareFailed
+    answerColumn = 記録列番号(recordWS, "回答番号")
+    If answerColumn = 0 Then GoTo InvalidHeader
     headerValue = historyWS.Cells(1, 1).Value
     If IsError(headerValue) Then GoTo InvalidHeader
     If Len(Trim$(CStr(headerValue))) = 0 Then
@@ -180,9 +250,9 @@ Private Function 取込履歴を準備(ByVal recordWS As Worksheet, ByVal histor
         End If
     Next rowNo
 
-    lastRecordRow = recordWS.Cells(recordWS.Rows.Count, 1).End(xlUp).Row
+    lastRecordRow = 記録最終行(recordWS)
     For rowNo = 2 To lastRecordRow
-        answerId = recordWS.Cells(rowNo, 1).Value
+        answerId = recordWS.Cells(rowNo, answerColumn).Value
         answerKey = 回答番号をキー化(answerId)
         If Len(answerKey) > 0 Then
             If Not historyIDs.Exists(answerKey) Then
@@ -223,9 +293,15 @@ End Function
 Public Sub 運転者名マスタを初期作成()
     Dim ws As Worksheet, masterWS As Worksheet, lastRow As Long, rowNo As Long, outputRow As Long
     Dim rawValue As Variant, driverName As String, names As Object, existingA As Long, existingB As Long
+    Dim driverColumn As Long
 
     On Error GoTo Failed
     Set ws = ThisWorkbook.Worksheets("記録")
+    driverColumn = 記録列番号(ws, "運転者氏名")
+    If driverColumn = 0 Then
+        MsgBox "記録シートの「運転者氏名」見出しが見つかりません。", vbExclamation
+        Exit Sub
+    End If
     On Error Resume Next
     Set masterWS = ThisWorkbook.Worksheets("運転者名マスタ")
     On Error GoTo Failed
@@ -251,10 +327,10 @@ Public Sub 運転者名マスタを初期作成()
     masterWS.Cells(1, "B").Value = "メモ"
     Set names = CreateObject("Scripting.Dictionary")
     names.CompareMode = vbBinaryCompare
-    lastRow = ws.Cells(ws.Rows.Count, "W").End(xlUp).Row
+    lastRow = 記録最終行(ws)
     outputRow = 2
     For rowNo = 2 To lastRow
-        rawValue = ws.Cells(rowNo, "W").Value
+        rawValue = ws.Cells(rowNo, driverColumn).Value
         If Not IsError(rawValue) And Not IsEmpty(rawValue) Then
             driverName = 運転者名の前後空白を除去(CStr(rawValue))
             If Len(driverName) > 0 Then
@@ -274,19 +350,22 @@ Failed:
     Err.Clear
 End Sub
 
-Private Sub 運転者氏名をチェック()
+Private Function 運転者氏名をチェック() As Long
     Dim ws As Worksheet, masterWS As Worksheet, masterNames As Collection
     Dim exactCounts As Object, normalizedCounts As Object, variantsByName As Object, nameVariants As Object
-    Dim lastRow As Long, lastNameRow As Long, rowNo As Long, errorCount As Long
+    Dim lastRow As Long, lastNameRow As Long, rowNo As Long, errorCount As Long, driverColumn As Long
     Dim rawValue As Variant, driverName As String, compactName As String, warning As Variant
     Dim driverWarnings As Collection
 
     On Error GoTo Failed
     Set ws = ThisWorkbook.Worksheets("記録")
-    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
-    If ws.Cells(ws.Rows.Count, "W").End(xlUp).Row > lastRow Then lastRow = ws.Cells(ws.Rows.Count, "W").End(xlUp).Row
+    driverColumn = 記録列番号(ws, "運転者氏名")
+    If driverColumn = 0 Then Err.Raise vbObjectError + 129, "運転者氏名をチェック", "運転者氏名の見出しがありません。"
+    lastRow = 記録最終行(ws)
     For rowNo = 2 To lastRow
-        Call セルの自動チェック警告カテゴリを除去(ws.Cells(rowNo, "W"), errorCount, "運転者名警告")
+        If Not 記録行は確認済み(ws, rowNo) Then
+            Call セルの自動チェック警告カテゴリを除去(ws.Cells(rowNo, driverColumn), errorCount, "運転者名警告")
+        End If
     Next rowNo
 
     Set exactCounts = CreateObject("Scripting.Dictionary")
@@ -297,7 +376,7 @@ Private Sub 運転者氏名をチェック()
     variantsByName.CompareMode = vbBinaryCompare
 
     For rowNo = 2 To lastRow
-        rawValue = ws.Cells(rowNo, "W").Value
+        rawValue = ws.Cells(rowNo, driverColumn).Value
         If Not IsError(rawValue) And Not IsEmpty(rawValue) Then
             driverName = CStr(rawValue)
             compactName = 運転者名の空白を除去(driverName)
@@ -344,25 +423,29 @@ Private Sub 運転者氏名をチェック()
     End If
 
     For rowNo = 2 To lastRow
-        rawValue = ws.Cells(rowNo, "W").Value
-        If IsError(rawValue) Then
-            Call 自動チェック警告を追加(ws.Cells(rowNo, "W"), "要確認：運転者氏名を読み取れません。入力値を確認してください。", errorCount, "運転者名警告")
-        ElseIf Not IsEmpty(rawValue) Then
-            driverName = CStr(rawValue)
-            If Len(運転者名の前後空白を除去(driverName)) > 0 Then
-                Set driverWarnings = 運転者名警告一覧(driverName, masterNames, exactCounts, normalizedCounts, variantsByName)
-                For Each warning In driverWarnings
-                    Call 自動チェック警告を追加(ws.Cells(rowNo, "W"), CStr(warning), errorCount, "運転者名警告")
-                Next warning
+        If Not 記録行は確認済み(ws, rowNo) Then
+            rawValue = ws.Cells(rowNo, driverColumn).Value
+            If IsError(rawValue) Then
+                Call 自動チェック警告を追加(ws.Cells(rowNo, driverColumn), "要確認：運転者氏名を読み取れません。入力値を確認してください。", errorCount, "運転者名警告")
+            ElseIf Not IsEmpty(rawValue) Then
+                driverName = CStr(rawValue)
+                If Len(運転者名の前後空白を除去(driverName)) > 0 Then
+                    Set driverWarnings = 運転者名警告一覧(driverName, masterNames, exactCounts, normalizedCounts, variantsByName)
+                    For Each warning In driverWarnings
+                        Call 自動チェック警告を追加(ws.Cells(rowNo, driverColumn), CStr(warning), errorCount, "運転者名警告")
+                    Next warning
+                End If
             End If
         End If
     Next rowNo
     If errorCount > 0 Then MsgBox "運転者名警告の" & errorCount & "セルでコメントまたは書式を処理できませんでした。確認してください。", vbExclamation
-    Exit Sub
+    運転者氏名をチェック = errorCount
+    Exit Function
 Failed:
     MsgBox "運転者氏名チェックを中止しました。" & Err.Description, vbExclamation
+    運転者氏名をチェック = errorCount + 1
     Err.Clear
-End Sub
+End Function
 
 Private Function 運転者名警告一覧(ByVal enteredName As String, ByVal masterNames As Collection, _
                                     ByVal exactCounts As Object, ByVal normalizedCounts As Object, _
@@ -530,14 +613,30 @@ Private Function 運転者名の編集距離(ByVal leftName As String, ByVal rig
 End Function
 
 Public Sub 入力内容チェック()
-    Call 入力内容チェック実行(True)
-    Call 運転者氏名をチェック
-    Call 給油記録を照合実行(False)
+    Dim ws As Worksheet, validationFailures As Long, driverFailures As Long
+    Dim fuelSucceeded As Boolean, confirmedCount As Long, reviewCount As Long
+    Dim autoConfirmAllowed As Boolean
+
+    Set ws = ThisWorkbook.Sheets("記録")
+    If 記録列番号(ws, "回答番号") = 0 Or 記録列番号(ws, "チェック") = 0 Then
+        MsgBox "記録シートに「回答番号」または「チェック」の見出しがないか、重複しています。処理を中止しました。", vbExclamation
+        Exit Sub
+    End If
+    validationFailures = 入力内容チェック実行(False)
+    driverFailures = 運転者氏名をチェック()
+    fuelSucceeded = 給油記録を照合実行(False)
     Call 車両候補確認画面を表示
+
+    autoConfirmAllowed = (validationFailures = 0 And driverFailures = 0 And fuelSucceeded)
+    Call 未確認行を自動確定(ws, confirmedCount, reviewCount, autoConfirmAllowed)
+    MsgBox "内容チェックが完了しました。" & vbCrLf & _
+           "自動で確認済み：" & confirmedCount & "件" & vbCrLf & _
+           "要確認・未確定：" & reviewCount & "件", vbInformation
 End Sub
 
 Private Function 入力内容チェック実行(ByVal 結果表示 As Boolean) As Long
     Dim ws As Worksheet, lastRow As Long, rowNo As Long, gasolineColumn As Long
+    Dim startMeterColumn As Long, endMeterColumn As Long, startTimeColumn As Long, endTimeColumn As Long
     Dim startMeter As Double, endMeter As Double, distanceKm As Double
     Dim startTime As Double, endTime As Double, durationMinutes As Long
     Dim startTimeValid As Boolean, endTimeValid As Boolean
@@ -545,69 +644,82 @@ Private Function 入力内容チェック実行(ByVal 結果表示 As Boolean) A
 
     Set ws = ThisWorkbook.Sheets("記録")
     Set vehicleReviewCandidates = New Collection
-    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    lastRow = 記録最終行(ws)
     If lastRow < 2 Then
         If 結果表示 Then MsgBox "確認対象の記録がありません。", vbInformation
         Exit Function
     End If
 
+    startMeterColumn = 記録列番号(ws, "始業時メーター(km)")
+    endMeterColumn = 記録列番号(ws, "終業時メーター(km)")
+    startTimeColumn = 記録列番号(ws, "使用時間（始）")
+    endTimeColumn = 記録列番号(ws, "使用時間（終）")
     gasolineColumn = ガソリン給油列を取得(ws)
+    If startMeterColumn = 0 Or endMeterColumn = 0 Or startTimeColumn = 0 Or endTimeColumn = 0 Then
+        MsgBox "記録シートのメーターまたは使用時間の見出しが見つかりません。", vbExclamation
+        入力内容チェック実行 = 1
+        Exit Function
+    End If
+
     Call 前回の自動チェック警告を除去(ws, 2, lastRow, commentFailures, gasolineColumn)
     For rowNo = 2 To lastRow
-        If 数値入力あり(ws.Cells(rowNo, "P").Value) And 数値入力あり(ws.Cells(rowNo, "Q").Value) Then
-            startMeter = CDbl(ws.Cells(rowNo, "P").Value)
-            endMeter = CDbl(ws.Cells(rowNo, "Q").Value)
-            distanceKm = endMeter - startMeter
-            If distanceKm < 0 Then
-                warningText = "要確認：終業時メーターが始業時メーターより小さくなっています。" & vbCrLf & _
-                              "始業時メーター：" & Format$(startMeter, "0.##") & "km" & vbCrLf & _
-                              "終業時メーター：" & Format$(endMeter, "0.##") & "km" & vbCrLf & "入力内容を確認してください。"
-                Call 自動チェック警告を追加(ws.Cells(rowNo, "P"), warningText, commentFailures)
-                Call 自動チェック警告を追加(ws.Cells(rowNo, "Q"), warningText, commentFailures)
-            ElseIf distanceKm >= CHECK_LONG_DISTANCE_KM Then
-                warningText = "要確認：1回の走行距離が" & Format$(CHECK_LONG_DISTANCE_KM, "0.##") & "km以上です。" & vbCrLf & _
-                              "始業時メーター：" & Format$(startMeter, "0.##") & "km" & vbCrLf & _
-                              "終業時メーター：" & Format$(endMeter, "0.##") & "km" & vbCrLf & _
-                              "走行距離：" & Format$(distanceKm, "0.##") & "km" & vbCrLf & "入力内容を確認してください。"
-                Call 自動チェック警告を追加(ws.Cells(rowNo, "P"), warningText, commentFailures)
-                Call 自動チェック警告を追加(ws.Cells(rowNo, "Q"), warningText, commentFailures)
-            End If
-        End If
-
-        startTimeValid = 時刻を取得(ws.Cells(rowNo, "N").Value, startTime)
-        endTimeValid = 時刻を取得(ws.Cells(rowNo, "O").Value, endTime)
-        If セルに値がある(ws.Cells(rowNo, "N").Value) And Not startTimeValid Then
-            warningText = "要確認：使用開始時刻を時刻として認識できません。入力値：" & _
-                          セル値を表示(ws.Cells(rowNo, "N").Value) & "。入力内容を確認してください。"
-            Call 自動チェック警告を追加(ws.Cells(rowNo, "N"), warningText, commentFailures)
-        End If
-        If セルに値がある(ws.Cells(rowNo, "O").Value) And Not endTimeValid Then
-            warningText = "要確認：使用終了時刻を時刻として認識できません。入力値：" & _
-                          セル値を表示(ws.Cells(rowNo, "O").Value) & "。入力内容を確認してください。"
-            Call 自動チェック警告を追加(ws.Cells(rowNo, "O"), warningText, commentFailures)
-        End If
-
-        If startTimeValid And endTimeValid Then
-            If endTime < startTime Then
-                warningText = "要確認：使用終了時刻が開始時刻より前になっています。" & vbCrLf & _
-                              "開始：" & Format$(startTime, "hh:mm") & vbCrLf & _
-                              "終了：" & Format$(endTime, "hh:mm") & vbCrLf & "入力内容を確認してください。"
-                Call 自動チェック警告を追加(ws.Cells(rowNo, "N"), warningText, commentFailures)
-                Call 自動チェック警告を追加(ws.Cells(rowNo, "O"), warningText, commentFailures)
-            Else
-                durationMinutes = CLng((endTime - startTime) * 1440# + 0.5)
-                If (endTime - startTime) * 24# >= CHECK_LONG_USAGE_HOURS Then
-                    warningText = "要確認：使用時間が" & Format$(CHECK_LONG_USAGE_HOURS, "0.##") & "時間以上です。" & vbCrLf & _
-                                  "開始：" & Format$(startTime, "hh:mm") & vbCrLf & "終了：" & Format$(endTime, "hh:mm") & vbCrLf & _
-                                  "使用時間：" & 使用時間を表示(durationMinutes) & vbCrLf & "入力内容を確認してください。"
-                    Call 自動チェック警告を追加(ws.Cells(rowNo, "N"), warningText, commentFailures)
-                    Call 自動チェック警告を追加(ws.Cells(rowNo, "O"), warningText, commentFailures)
+        If Not 記録行は確認済み(ws, rowNo) Then
+            If 数値入力あり(ws.Cells(rowNo, startMeterColumn).Value) And _
+               数値入力あり(ws.Cells(rowNo, endMeterColumn).Value) Then
+                startMeter = CDbl(ws.Cells(rowNo, startMeterColumn).Value)
+                endMeter = CDbl(ws.Cells(rowNo, endMeterColumn).Value)
+                distanceKm = endMeter - startMeter
+                If distanceKm < 0 Then
+                    warningText = "要確認：終業時メーターが始業時メーターより小さくなっています。" & vbCrLf & _
+                                  "始業時メーター：" & Format$(startMeter, "0.##") & "km" & vbCrLf & _
+                                  "終業時メーター：" & Format$(endMeter, "0.##") & "km" & vbCrLf & "入力内容を確認してください。"
+                    Call 自動チェック警告を追加(ws.Cells(rowNo, startMeterColumn), warningText, commentFailures)
+                    Call 自動チェック警告を追加(ws.Cells(rowNo, endMeterColumn), warningText, commentFailures)
+                ElseIf distanceKm >= CHECK_LONG_DISTANCE_KM Then
+                    warningText = "要確認：1回の走行距離が" & Format$(CHECK_LONG_DISTANCE_KM, "0.##") & "km以上です。" & vbCrLf & _
+                                  "始業時メーター：" & Format$(startMeter, "0.##") & "km" & vbCrLf & _
+                                  "終業時メーター：" & Format$(endMeter, "0.##") & "km" & vbCrLf & _
+                                  "走行距離：" & Format$(distanceKm, "0.##") & "km" & vbCrLf & "入力内容を確認してください。"
+                    Call 自動チェック警告を追加(ws.Cells(rowNo, startMeterColumn), warningText, commentFailures)
+                    Call 自動チェック警告を追加(ws.Cells(rowNo, endMeterColumn), warningText, commentFailures)
                 End If
             End If
-        End If
 
-        If gasolineColumn > 0 Then
-            Call ガソリン給油量をチェック(ws.Cells(rowNo, gasolineColumn), commentFailures)
+            startTimeValid = 時刻を取得(ws.Cells(rowNo, startTimeColumn).Value, startTime)
+            endTimeValid = 時刻を取得(ws.Cells(rowNo, endTimeColumn).Value, endTime)
+            If セルに値がある(ws.Cells(rowNo, startTimeColumn).Value) And Not startTimeValid Then
+                warningText = "要確認：使用開始時刻を時刻として認識できません。入力値：" & _
+                              セル値を表示(ws.Cells(rowNo, startTimeColumn).Value) & "。入力内容を確認してください。"
+                Call 自動チェック警告を追加(ws.Cells(rowNo, startTimeColumn), warningText, commentFailures)
+            End If
+            If セルに値がある(ws.Cells(rowNo, endTimeColumn).Value) And Not endTimeValid Then
+                warningText = "要確認：使用終了時刻を時刻として認識できません。入力値：" & _
+                              セル値を表示(ws.Cells(rowNo, endTimeColumn).Value) & "。入力内容を確認してください。"
+                Call 自動チェック警告を追加(ws.Cells(rowNo, endTimeColumn), warningText, commentFailures)
+            End If
+
+            If startTimeValid And endTimeValid Then
+                If endTime < startTime Then
+                    warningText = "要確認：使用終了時刻が開始時刻より前になっています。" & vbCrLf & _
+                                  "開始：" & Format$(startTime, "hh:mm") & vbCrLf & _
+                                  "終了：" & Format$(endTime, "hh:mm") & vbCrLf & "入力内容を確認してください。"
+                    Call 自動チェック警告を追加(ws.Cells(rowNo, startTimeColumn), warningText, commentFailures)
+                    Call 自動チェック警告を追加(ws.Cells(rowNo, endTimeColumn), warningText, commentFailures)
+                Else
+                    durationMinutes = CLng((endTime - startTime) * 1440# + 0.5)
+                    If (endTime - startTime) * 24# >= CHECK_LONG_USAGE_HOURS Then
+                        warningText = "要確認：使用時間が" & Format$(CHECK_LONG_USAGE_HOURS, "0.##") & "時間以上です。" & vbCrLf & _
+                                      "開始：" & Format$(startTime, "hh:mm") & vbCrLf & "終了：" & Format$(endTime, "hh:mm") & vbCrLf & _
+                                      "使用時間：" & 使用時間を表示(durationMinutes) & vbCrLf & "入力内容を確認してください。"
+                        Call 自動チェック警告を追加(ws.Cells(rowNo, startTimeColumn), warningText, commentFailures)
+                        Call 自動チェック警告を追加(ws.Cells(rowNo, endTimeColumn), warningText, commentFailures)
+                    End If
+                End If
+            End If
+
+            If gasolineColumn > 0 Then
+                Call ガソリン給油量をチェック(ws.Cells(rowNo, gasolineColumn), commentFailures)
+            End If
         End If
     Next rowNo
 
@@ -680,17 +792,7 @@ Private Function 使用時間を表示(ByVal totalMinutes As Long) As String
 End Function
 
 Private Function ガソリン給油列を取得(ByVal ws As Worksheet) As Long
-    Dim lastColumn As Long, columnNo As Long, headerValue As Variant
-    lastColumn = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
-    For columnNo = 1 To lastColumn
-        headerValue = ws.Cells(1, columnNo).Value
-        If Not IsError(headerValue) And Not IsEmpty(headerValue) Then
-            If Trim$(CStr(headerValue)) = GASOLINE_FUEL_HEADER Then
-                ガソリン給油列を取得 = columnNo
-                Exit Function
-            End If
-        End If
-    Next columnNo
+    ガソリン給油列を取得 = HeaderColumn(ws, GASOLINE_FUEL_HEADER)
 End Function
 
 Private Sub ガソリン給油量をチェック(ByVal target As Range, ByRef errorCount As Long)
@@ -731,7 +833,7 @@ Private Function ガソリン給油量を解析(ByVal cellValue As Variant, ByRe
     numericText = normalizedValue
     If Right$(numericText, Len("リットル")) = "リットル" Then
         numericText = Trim$(Left$(numericText, Len(numericText) - Len("リットル")))
-    ElseIf Right$(numericText, 1) = "L" Or Right$(numericText, 1) = "l" Or Right$(numericText, 1) = "ℓ" Then
+    ElseIf Right$(numericText, 1) = "L" Or Right$(numericText, 1) = "l" Or Right$(numericText, 1) = ChrW(&H2113) Then
         numericText = Trim$(Left$(numericText, Len(numericText) - 1))
     End If
     If Not 十進数を取得(numericText, amount) Then Exit Function
@@ -810,15 +912,24 @@ End Function
 Private Sub 前回の自動チェック警告を除去(ByVal ws As Worksheet, ByVal firstRow As Long, _
                                       ByVal lastRow As Long, ByRef errorCount As Long, _
                                       ByVal gasolineColumn As Long)
-    Dim rowNo As Long, columnName As Variant
-    For Each columnName In Array("J", "N", "O", "P", "Q")
-        For rowNo = firstRow To lastRow
-            Call セルの自動チェック警告を除去(ws.Cells(rowNo, CStr(columnName)), errorCount)
-        Next rowNo
-    Next columnName
+    Dim rowNo As Long, columnHeader As Variant, columnNo As Long
+    Dim warningHeaders As Variant
+    warningHeaders = Array("車両番号", "使用時間（始）", "使用時間（終）", "始業時メーター(km)", "終業時メーター(km)")
+    For Each columnHeader In warningHeaders
+        columnNo = 記録列番号(ws, CStr(columnHeader))
+        If columnNo > 0 Then
+            For rowNo = firstRow To lastRow
+                If Not 記録行は確認済み(ws, rowNo) Then
+                    Call セルの自動チェック警告を除去(ws.Cells(rowNo, columnNo), errorCount)
+                End If
+            Next rowNo
+        End If
+    Next columnHeader
     If gasolineColumn > 0 Then
         For rowNo = firstRow To lastRow
-            Call セルの自動チェック警告を除去(ws.Cells(rowNo, gasolineColumn), errorCount)
+            If Not 記録行は確認済み(ws, rowNo) Then
+                Call セルの自動チェック警告を除去(ws.Cells(rowNo, gasolineColumn), errorCount)
+            End If
         Next rowNo
     End If
 End Sub
@@ -1056,7 +1167,24 @@ Private Sub 車両選択候補をチェック(ByVal ws As Worksheet, ByVal lastR
     Dim currentVehicle As String, vehicleValue As Variant, currentStart As Double, currentEnd As Double
     Dim assignedMismatch As Boolean, candidateCount As Long, candidateIndex As Long, warningText As String
     Dim candidateInfo As Object
+    Dim answerColumn As Long, vehicleColumn As Long, dateColumn As Long
+    Dim startTimeColumn As Long, endTimeColumn As Long, endMeterColumn As Long
+    Dim driverColumn As Long, destinationColumn As Long, dutyColumn As Long
 
+    answerColumn = 記録列番号(ws, "回答番号")
+    vehicleColumn = 記録列番号(ws, "車両番号")
+    dateColumn = 記録列番号(ws, "運転した日")
+    startTimeColumn = 記録列番号(ws, "使用時間（始）")
+    endTimeColumn = 記録列番号(ws, "使用時間（終）")
+    endMeterColumn = 記録列番号(ws, "終業時メーター(km)")
+    driverColumn = 記録列番号(ws, "運転者氏名")
+    destinationColumn = 記録列番号(ws, "行先")
+    dutyColumn = 記録列番号(ws, "用務")
+    If answerColumn = 0 Or vehicleColumn = 0 Or dateColumn = 0 Or startTimeColumn = 0 Or _
+       endTimeColumn = 0 Or endMeterColumn = 0 Or driverColumn = 0 Then
+        errorCount = errorCount + 1
+        Exit Sub
+    End If
     If lastRow < 3 Then Exit Sub
     Set vehicleReviewCandidates = New Collection
     ReDim vehicleNames(1 To lastRow - 1)
@@ -1068,7 +1196,7 @@ Private Sub 車両選択候補をチェック(ByVal ws As Worksheet, ByVal lastR
     ReDim rowEndMeter(1 To lastRow)
 
     For rowNo = 2 To lastRow
-        vehicleValue = ws.Cells(rowNo, "J").Value
+        vehicleValue = ws.Cells(rowNo, vehicleColumn).Value
         If Not IsError(vehicleValue) And Not IsEmpty(vehicleValue) Then
             currentVehicle = Trim$(CStr(vehicleValue))
             If Len(currentVehicle) > 0 Then
@@ -1084,19 +1212,20 @@ Private Sub 車両選択候補をチェック(ByVal ws As Worksheet, ByVal lastR
             End If
         End If
 
-        rowTimesValid(rowNo) = 日付と時刻を取得(ws.Cells(rowNo, "K").Value, _
-                                             ws.Cells(rowNo, "N").Value, rowStartDateTime(rowNo)) And _
-                               日付と時刻を取得(ws.Cells(rowNo, "K").Value, _
-                                             ws.Cells(rowNo, "O").Value, rowEndDateTime(rowNo))
+        rowTimesValid(rowNo) = 日付と時刻を取得(ws.Cells(rowNo, dateColumn).Value, _
+                                             ws.Cells(rowNo, startTimeColumn).Value, rowStartDateTime(rowNo)) And _
+                               日付と時刻を取得(ws.Cells(rowNo, dateColumn).Value, _
+                                             ws.Cells(rowNo, endTimeColumn).Value, rowEndDateTime(rowNo))
         If rowTimesValid(rowNo) Then
             If rowEndDateTime(rowNo) < rowStartDateTime(rowNo) Then rowTimesValid(rowNo) = False
         End If
-        rowEndMeterValid(rowNo) = 数値入力あり(ws.Cells(rowNo, "Q").Value)
-        If rowEndMeterValid(rowNo) Then rowEndMeter(rowNo) = CDbl(ws.Cells(rowNo, "Q").Value)
+        rowEndMeterValid(rowNo) = 数値入力あり(ws.Cells(rowNo, endMeterColumn).Value)
+        If rowEndMeterValid(rowNo) Then rowEndMeter(rowNo) = CDbl(ws.Cells(rowNo, endMeterColumn).Value)
     Next rowNo
     If vehicleCount < 2 Then Exit Sub
 
     For rowNo = 2 To lastRow
+        If 記録行は確認済み(ws, rowNo) Then GoTo NextVehicleRecord
         assignedIndex = rowVehicleIndex(rowNo)
         If assignedIndex = 0 Or Not rowTimesValid(rowNo) Or Not rowEndMeterValid(rowNo) Then GoTo NextVehicleRecord
         currentStart = rowStartDateTime(rowNo)
@@ -1160,35 +1289,41 @@ Private Sub 車両選択候補をチェック(ByVal ws As Worksheet, ByVal lastR
 
         If candidateCount = 1 Then
             Set candidateInfo = CreateObject("Scripting.Dictionary")
-            candidateInfo.Add "回答番号", セル値を表示(ws.Cells(rowNo, "A").Value)
+            candidateInfo.Add "回答番号", セル値を表示(ws.Cells(rowNo, answerColumn).Value)
             candidateInfo.Add "登録車両", vehicleNames(assignedIndex)
             candidateInfo.Add "候補車両", vehicleNames(candidateIndex)
             candidateInfo.Add "運転日", Format$(Fix(rowStartDateTime(rowNo)), "yyyy/m/d")
             candidateInfo.Add "使用時間", Format$(rowStartDateTime(rowNo), "hh:mm") & "～" & Format$(rowEndDateTime(rowNo), "hh:mm")
-            candidateInfo.Add "運転者", セル値を表示(ws.Cells(rowNo, "W").Value)
-            candidateInfo.Add "行先", セル値を表示(ws.Cells(rowNo, "R").Value)
-            candidateInfo.Add "用務", セル値を表示(ws.Cells(rowNo, "T").Value)
+            candidateInfo.Add "運転者", セル値を表示(ws.Cells(rowNo, driverColumn).Value)
+            If destinationColumn > 0 Then candidateInfo.Add "行先", セル値を表示(ws.Cells(rowNo, destinationColumn).Value)
+            If dutyColumn > 0 Then candidateInfo.Add "用務", セル値を表示(ws.Cells(rowNo, dutyColumn).Value)
             candidateInfo.Add "登録推移", Format$(previousMeter(assignedIndex), "0.##") & " → " & Format$(rowEndMeter(rowNo), "0.##") & " → " & Format$(nextMeter(assignedIndex), "0.##")
             candidateInfo.Add "候補推移", Format$(previousMeter(candidateIndex), "0.##") & " → " & Format$(rowEndMeter(rowNo), "0.##") & " → " & Format$(nextMeter(candidateIndex), "0.##")
             vehicleReviewCandidates.Add candidateInfo
             If 警告を追加 Then
                 warningText = "要確認：車両選択間違いの可能性があります。" & vbCrLf & vbCrLf & _
-                          "回答番号：" & セル値を表示(ws.Cells(rowNo, "A").Value) & vbCrLf & _
-                          "運転日：" & Format$(Fix(rowStartDateTime(rowNo)), "yyyy/m/d") & vbCrLf & _
-                          "使用時間：" & Format$(rowStartDateTime(rowNo), "hh:mm") & "～" & Format$(rowEndDateTime(rowNo), "hh:mm") & vbCrLf & _
-                          "運転者：" & セル値を表示(ws.Cells(rowNo, "W").Value) & vbCrLf
-            If セルに値がある(ws.Cells(rowNo, "R").Value) Then warningText = warningText & "行先：" & セル値を表示(ws.Cells(rowNo, "R").Value) & vbCrLf
-            If セルに値がある(ws.Cells(rowNo, "T").Value) Then warningText = warningText & "用務：" & セル値を表示(ws.Cells(rowNo, "T").Value) & vbCrLf
-            warningText = warningText & vbCrLf & _
-                          "登録車両：" & vehicleNames(assignedIndex) & vbCrLf & _
-                          "候補車両：" & vehicleNames(candidateIndex) & vbCrLf & vbCrLf & _
-                          "【登録車両 " & vehicleNames(assignedIndex) & " のメーター推移】" & vbCrLf & _
-                          Format$(previousMeter(assignedIndex), "0.##") & " → " & Format$(rowEndMeter(rowNo), "0.##") & " → " & Format$(nextMeter(assignedIndex), "0.##") & vbCrLf & vbCrLf & _
-                          "【候補車両 " & vehicleNames(candidateIndex) & " のメーター推移】" & vbCrLf & _
-                          Format$(previousMeter(candidateIndex), "0.##") & " → " & Format$(rowEndMeter(rowNo), "0.##") & " → " & Format$(nextMeter(candidateIndex), "0.##") & vbCrLf & vbCrLf & _
-                          vehicleNames(candidateIndex) & "号車として扱う方がメーター推移と時間関係が自然です。" & vbCrLf & _
-                          "実際に使用した車両を確認してください。"
-            Call 自動チェック警告を追加(ws.Cells(rowNo, "J"), warningText, errorCount)
+                              "回答番号：" & セル値を表示(ws.Cells(rowNo, answerColumn).Value) & vbCrLf & _
+                              "運転日：" & Format$(Fix(rowStartDateTime(rowNo)), "yyyy/m/d") & vbCrLf & _
+                              "使用時間：" & Format$(rowStartDateTime(rowNo), "hh:mm") & "～" & Format$(rowEndDateTime(rowNo), "hh:mm") & vbCrLf
+                If driverColumn > 0 Then warningText = warningText & "運転者：" & セル値を表示(ws.Cells(rowNo, driverColumn).Value) & vbCrLf
+                If destinationColumn > 0 Then
+                    If セルに値がある(ws.Cells(rowNo, destinationColumn).Value) Then _
+                        warningText = warningText & "行先：" & セル値を表示(ws.Cells(rowNo, destinationColumn).Value) & vbCrLf
+                End If
+                If dutyColumn > 0 Then
+                    If セルに値がある(ws.Cells(rowNo, dutyColumn).Value) Then _
+                        warningText = warningText & "用務：" & セル値を表示(ws.Cells(rowNo, dutyColumn).Value) & vbCrLf
+                End If
+                warningText = warningText & vbCrLf & _
+                              "登録車両：" & vehicleNames(assignedIndex) & vbCrLf & _
+                              "候補車両：" & vehicleNames(candidateIndex) & vbCrLf & vbCrLf & _
+                              "【登録車両 " & vehicleNames(assignedIndex) & " のメーター推移】" & vbCrLf & _
+                              Format$(previousMeter(assignedIndex), "0.##") & " → " & Format$(rowEndMeter(rowNo), "0.##") & " → " & Format$(nextMeter(assignedIndex), "0.##") & vbCrLf & vbCrLf & _
+                              "【候補車両 " & vehicleNames(candidateIndex) & " のメーター推移】" & vbCrLf & _
+                              Format$(previousMeter(candidateIndex), "0.##") & " → " & Format$(rowEndMeter(rowNo), "0.##") & " → " & Format$(nextMeter(candidateIndex), "0.##") & vbCrLf & vbCrLf & _
+                              vehicleNames(candidateIndex) & "号車として扱う方がメーター推移と時間関係が自然です。" & vbCrLf & _
+                              "実際に使用した車両を確認してください。"
+                Call 自動チェック警告を追加(ws.Cells(rowNo, vehicleColumn), warningText, errorCount)
             End If
         End If
 NextVehicleRecord:
@@ -1219,14 +1354,17 @@ FormUnavailable:
 End Sub
 
 Public Sub 車両候補の対象行へ移動(ByVal answerNumber As String)
-    Dim ws As Worksheet, rowNo As Long, foundRow As Long, matches As Long
+    Dim ws As Worksheet, foundRow As Long, vehicleColumn As Long
     Set ws = ThisWorkbook.Sheets("記録")
-    For rowNo = 2 To ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
-        If セル値を表示(ws.Cells(rowNo, "A").Value) = answerNumber Then matches = matches + 1: foundRow = rowNo
-    Next rowNo
-    If matches = 1 Then
+    foundRow = 回答番号行を検索(ws, answerNumber)
+    vehicleColumn = 記録列番号(ws, "車両番号")
+    If foundRow > 0 And vehicleColumn > 0 Then
+        If 記録行は確認済み(ws, foundRow) Then
+            MsgBox "この記録は確認済みです。修正する場合は先にチェックを外してください。", vbExclamation
+            Exit Sub
+        End If
         ws.Activate
-        ws.Cells(foundRow, "J").Select
+        ws.Cells(foundRow, vehicleColumn).Select
     Else
         MsgBox "回答番号 " & answerNumber & " を一意に特定できません。再チェックしてください。", vbExclamation
     End If
@@ -1235,15 +1373,26 @@ End Sub
 Private Sub 最新の車両候補を再判定()
     Dim ws As Worksheet, lastRow As Long, ignoredErrors As Long
     Set ws = ThisWorkbook.Sheets("記録")
-    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    lastRow = 記録最終行(ws)
     Set vehicleReviewCandidates = New Collection
     If lastRow >= 3 Then Call 車両選択候補をチェック(ws, lastRow, ignoredErrors, False)
 End Sub
 
 Public Function 車両候補を承認して修正(ByVal answerNumber As String, ByVal expectedVehicle As String, _
                                       ByVal expectedCandidate As String) As Boolean
-    Dim ws As Worksheet, rowNo As Long, foundRow As Long, matches As Long, item As Object, currentCandidate As Object
+    Dim ws As Worksheet, foundRow As Long, vehicleColumn As Long
+    Dim item As Object, currentCandidate As Object
     Set ws = ThisWorkbook.Sheets("記録")
+    foundRow = 回答番号行を検索(ws, answerNumber)
+    If foundRow = 0 Then
+        MsgBox "回答番号を一意に特定できないため修正しませんでした。", vbExclamation
+        Exit Function
+    End If
+    If 記録行は確認済み(ws, foundRow) Then
+        MsgBox "この記録は確認済みです。修正する場合は先にチェックを外してください。", vbExclamation
+        Exit Function
+    End If
+
     Call 最新の車両候補を再判定
     For Each item In vehicleReviewCandidates
         If CStr(item("回答番号")) = answerNumber And CStr(item("登録車両")) = expectedVehicle And _
@@ -1253,30 +1402,52 @@ Public Function 車両候補を承認して修正(ByVal answerNumber As String, 
         MsgBox "対象記録の条件が変わったため修正しませんでした。内容チェックをやり直してください。", vbExclamation
         Exit Function
     End If
-    For rowNo = 2 To ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
-        If セル値を表示(ws.Cells(rowNo, "A").Value) = answerNumber Then matches = matches + 1: foundRow = rowNo
-    Next rowNo
-    If matches <> 1 Or Trim$(CStr(ws.Cells(foundRow, "J").Value)) <> expectedVehicle Then
+
+    vehicleColumn = 記録列番号(ws, "車両番号")
+    If vehicleColumn = 0 Then
+        MsgBox "車両番号の見出しが見つからないため修正しませんでした。", vbExclamation
+        Exit Function
+    End If
+    If Trim$(CStr(ws.Cells(foundRow, vehicleColumn).Value)) <> expectedVehicle Then
         MsgBox "回答番号または現在の車両番号を一意に確認できないため修正しませんでした。", vbExclamation
         Exit Function
     End If
-    ws.Cells(foundRow, "J").Value = expectedCandidate
+    ws.Cells(foundRow, vehicleColumn).Value = expectedCandidate
     vehicleReviewHasChanges = True
     車両候補を承認して修正 = True
 End Function
 
 Public Sub 車両候補確認を終了()
+    Dim ws As Worksheet, validationFailures As Long, driverFailures As Long
+    Dim fuelSucceeded As Boolean, confirmedCount As Long, reviewCount As Long
+    Dim autoConfirmAllowed As Boolean
+
     vehicleReviewIsOpen = False
     If vehicleReviewHasChanges Then
         vehicleReviewHasChanges = False
-        Call 記録シート整理を実行(False)
+        Set ws = ThisWorkbook.Sheets("記録")
+        validationFailures = 記録シート整理を実行(False)
+        driverFailures = 運転者氏名をチェック()
+        fuelSucceeded = 給油記録を照合実行(False)
+        autoConfirmAllowed = (validationFailures = 0 And driverFailures = 0 And fuelSucceeded)
+        Call 未確認行を自動確定(ws, confirmedCount, reviewCount, autoConfirmAllowed)
+        MsgBox "車両候補の確認後チェックが完了しました。" & vbCrLf & _
+               "自動で確認済み：" & confirmedCount & "件" & vbCrLf & _
+               "要確認・未確定：" & reviewCount & "件", vbInformation
     End If
 End Sub
 
 Private Sub 車両選択候補の事前チェック(ByVal ws As Worksheet, ByVal lastRow As Long)
-    Dim rowNo As Long, commentFailures As Long
+    Dim rowNo As Long, commentFailures As Long, vehicleColumn As Long
+    vehicleColumn = 記録列番号(ws, "車両番号")
+    If vehicleColumn = 0 Then
+        MsgBox "車両番号の見出しが見つかりません。車両候補を判定できません。", vbExclamation
+        Exit Sub
+    End If
     For rowNo = 2 To lastRow
-        Call セルの自動チェック警告を除去(ws.Cells(rowNo, "J"), commentFailures)
+        If Not 記録行は確認済み(ws, rowNo) Then
+            Call セルの自動チェック警告を除去(ws.Cells(rowNo, vehicleColumn), commentFailures)
+        End If
     Next rowNo
     Call 車両選択候補をチェック(ws, lastRow, commentFailures)
     If commentFailures > 0 Then
@@ -1289,54 +1460,84 @@ Sub 記録シート整理()
     Call 記録シート整理を実行(True)
 End Sub
 
-Private Sub 記録シート整理を実行(ByVal 結果表示 As Boolean)
-    Dim ws As Worksheet
-    Set ws = ThisWorkbook.Sheets("記録")
+Private Function 記録シート整理を実行(ByVal 結果表示 As Boolean) As Long
+    Dim ws As Worksheet, lastRow As Long, lastColumn As Long, validationFailures As Long
+    Dim vehicleColumn As Long, dateColumn As Long, startTimeColumn As Long
+    Dim startMeterColumn As Long, endMeterColumn As Long
+    Dim i As Long, currentVehicle As String, previousVehicle As String
+    Dim vehicleValue As Variant, previousMeter As Variant, oldEvents As Boolean, eventsCaptured As Boolean
 
-    Dim lastRow As Long
-    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    On Error GoTo OrganizerFailed
+    Set ws = ThisWorkbook.Sheets("記録")
+    lastRow = 記録最終行(ws)
     If lastRow < 3 Then
-        MsgBox "データが不足しています。", vbExclamation
-        Exit Sub
+        If 結果表示 Then MsgBox "データが不足しています。", vbExclamation
+        記録シート整理を実行 = 1
+        Exit Function
     End If
 
-    ' P列を誤った登録車両の前回Qで補完する前に、Q列と日時だけで候補を確認する。
+    vehicleColumn = 記録列番号(ws, "車両番号")
+    dateColumn = 記録列番号(ws, "運転した日")
+    startTimeColumn = 記録列番号(ws, "使用時間（始）")
+    startMeterColumn = 記録列番号(ws, "始業時メーター(km)")
+    endMeterColumn = 記録列番号(ws, "終業時メーター(km)")
+    lastColumn = 記録最終列(ws)
+    If vehicleColumn = 0 Or dateColumn = 0 Or startTimeColumn = 0 Or _
+       startMeterColumn = 0 Or endMeterColumn = 0 Then
+        MsgBox "記録シートの並び替えまたはメーター補完に必要な見出しが見つかりません。", vbExclamation
+        記録シート整理を実行 = 1
+        Exit Function
+    End If
+
+    ' Q列（始業時メーター）補完より前に、終業メーターと日時で車両候補を確認する。
     Call 車両選択候補の事前チェック(ws, lastRow)
 
-    ' 並び替え（2行目から）
+    oldEvents = Application.EnableEvents
+    eventsCaptured = True
+    Application.EnableEvents = False
     With ws.Sort
         .SortFields.Clear
-        .SortFields.Add Key:=ws.Range("J2:J" & lastRow), Order:=xlAscending
-        .SortFields.Add Key:=ws.Range("K2:K" & lastRow), Order:=xlAscending
-        .SortFields.Add Key:=ws.Range("N2:N" & lastRow), Order:=xlAscending
-        .SetRange ws.Range("A2:AO" & lastRow)
-        .Header = xlNo ' ヘッダーなしで並び替える
+        .SortFields.Add Key:=ws.Range(ws.Cells(2, vehicleColumn), ws.Cells(lastRow, vehicleColumn)), Order:=xlAscending
+        .SortFields.Add Key:=ws.Range(ws.Cells(2, dateColumn), ws.Cells(lastRow, dateColumn)), Order:=xlAscending
+        .SortFields.Add Key:=ws.Range(ws.Cells(2, startTimeColumn), ws.Cells(lastRow, startTimeColumn)), Order:=xlAscending
+        .SetRange ws.Range(ws.Cells(2, 1), ws.Cells(lastRow, lastColumn))
+        .Header = xlNo
         .Apply
     End With
+    Application.EnableEvents = oldEvents
 
-    ' 自動補完処理（P列：始業時メーター）
-    Dim i As Long
-    Dim current車両 As String, previous車両 As String
-    Dim previousメーター As Variant
-
-    previous車両 = ""
-    previousメーター = ""
-
+    previousVehicle = ""
+    previousMeter = ""
     For i = 2 To lastRow
-        current車両 = ws.Cells(i, "J").Value
-
-        If current車両 = previous車両 And IsNumeric(previousメーター) Then
-            ws.Cells(i, "P").Value = previousメーター
+        vehicleValue = ws.Cells(i, vehicleColumn).Value
+        If IsError(vehicleValue) Or IsEmpty(vehicleValue) Then
+            currentVehicle = ""
+        Else
+            currentVehicle = Trim$(CStr(vehicleValue))
         End If
 
-        previous車両 = current車両
-        previousメーター = ws.Cells(i, "Q").Value
+        If currentVehicle = previousVehicle And IsNumeric(previousMeter) Then
+            If Not 記録行は確認済み(ws, i) Then ws.Cells(i, startMeterColumn).Value = previousMeter
+        End If
+
+        previousVehicle = currentVehicle
+        If IsError(ws.Cells(i, endMeterColumn).Value) Then
+            previousMeter = Empty
+        Else
+            previousMeter = ws.Cells(i, endMeterColumn).Value
+        End If
     Next i
 
-    Call 入力内容チェック実行(False)
-
+    validationFailures = 入力内容チェック実行(False)
+    記録シート整理を実行 = validationFailures
     If 結果表示 Then MsgBox "並び替えと始業時メーターの補完が完了しました。", vbInformation
-End Sub
+    Exit Function
+OrganizerFailed:
+    If eventsCaptured Then Application.EnableEvents = oldEvents
+    記録シート整理を実行 = validationFailures + 1
+    MsgBox "記録シート整理を中止しました。" & Err.Description, vbExclamation
+    Err.Clear
+End Function
 
 Public Sub 給油記録を照合()
     Call 給油記録を照合実行(True)
@@ -1374,7 +1575,7 @@ Private Function 給油記録を照合実行(ByVal 結果表示 As Boolean) As B
     SetRemainingStatuses tickets, logs, statuses, usedTickets, usedLogs, matches, reservedSameDayTickets, reservedSameDayLogs
     If Not ResetManagedTicketOutput(ticketWS) Then Exit Function
     WriteTicketResults ticketWS, tickets, statuses, matches
-    Call 給油警告を記録シートへ反映(ticketWS, logWS, gasCol)
+    If Not 給油警告を記録シートへ反映(ticketWS, logWS, gasCol) Then Exit Function
 
     If 結果表示 Then MsgBox "給油記録の照合が完了しました。", vbInformation
     給油記録を照合実行 = True
@@ -1383,23 +1584,28 @@ Failed:
     MsgBox "給油照合を中止しました。" & Err.Description, vbExclamation
 End Function
 
-Private Sub 給油警告を記録シートへ反映(ByVal ticketWS As Worksheet, ByVal logWS As Worksheet, ByVal gasCol As Long)
+Private Function 給油警告を記録シートへ反映(ByVal ticketWS As Worksheet, ByVal logWS As Worksheet, ByVal gasCol As Long) As Boolean
     Dim lastTicketRow As Long, lastLogRow As Long, rowNo As Long, ticketRow As Long
+    Dim answerColumn As Long, vehicleColumn As Long, dateColumn As Long
     Dim ticketDate As Double, ticketAmount As Double, car As String
     Dim statusText As String, answer As String, warningText As String, dateText As String
-    Dim rowsToWarn As Collection, ticketItem As Variant, logItem As Variant, candidateLog As Variant
+    Dim rowsToWarn As Collection, unconfirmedRows As Collection
+    Dim ticketItem As Variant, logItem As Variant, candidateLog As Variant
     Dim tickets As Collection, logs As Collection, ticketStatus As Object
     Dim usedAnswers As Object, reservedAnswers As Object
     Dim noteFailures As Long, unlocatedCount As Long, exactCandidateCount As Long
 
     On Error GoTo Failed
-    lastLogRow = Application.Max(logWS.Cells(logWS.Rows.Count, "A").End(xlUp).Row, _
-                                 logWS.Cells(logWS.Rows.Count, "J").End(xlUp).Row, _
-                                 logWS.Cells(logWS.Rows.Count, "K").End(xlUp).Row, _
-                                 logWS.Cells(logWS.Rows.Count, gasCol).End(xlUp).Row)
+    answerColumn = 記録列番号(logWS, "回答番号")
+    vehicleColumn = 記録列番号(logWS, "車両番号")
+    dateColumn = 記録列番号(logWS, "運転した日")
+    If answerColumn = 0 Or vehicleColumn = 0 Or dateColumn = 0 Or gasCol = 0 Then GoTo Failed
+    lastLogRow = 記録最終行(logWS)
     Call セルの自動チェック警告カテゴリを除去(logWS.Cells(1, gasCol), noteFailures, "給油照合警告")
     For rowNo = 2 To lastLogRow
-        Call セルの自動チェック警告カテゴリを除去(logWS.Cells(rowNo, gasCol), noteFailures, "給油照合警告")
+        If Not 記録行は確認済み(logWS, rowNo) Then
+            Call セルの自動チェック警告カテゴリを除去(logWS.Cells(rowNo, gasCol), noteFailures, "給油照合警告")
+        End If
     Next rowNo
 
     Set ticketStatus = CreateObject("Scripting.Dictionary")
@@ -1439,17 +1645,24 @@ Private Sub 給油警告を記録シートへ反映(ByVal ticketWS As Worksheet,
                         ticketDate = Fix(CDbl(CDate(ticketWS.Cells(ticketRow, "A").Value)))
                         Set rowsToWarn = New Collection
                         For rowNo = 2 To lastLogRow
-                            If Not IsError(logWS.Cells(rowNo, "J").Value) And Not IsError(logWS.Cells(rowNo, "K").Value) Then
-                                If Trim$(CStr(logWS.Cells(rowNo, "J").Value)) = car And IsDate(logWS.Cells(rowNo, "K").Value) Then
-                                    If Fix(CDbl(CDate(logWS.Cells(rowNo, "K").Value))) = ticketDate Then rowsToWarn.Add rowNo
+                            If Not IsError(logWS.Cells(rowNo, vehicleColumn).Value) And _
+                               Not IsError(logWS.Cells(rowNo, dateColumn).Value) Then
+                                If Trim$(CStr(logWS.Cells(rowNo, vehicleColumn).Value)) = car And _
+                                   IsDate(logWS.Cells(rowNo, dateColumn).Value) Then
+                                    If Fix(CDbl(CDate(logWS.Cells(rowNo, dateColumn).Value))) = ticketDate Then rowsToWarn.Add rowNo
                                 End If
                             End If
                         Next rowNo
-                        If rowsToWarn.Count = 0 Then
+
+                        Set unconfirmedRows = New Collection
+                        For Each ticketItem In rowsToWarn
+                            If Not 記録行は確認済み(logWS, CLng(ticketItem)) Then unconfirmedRows.Add CLng(ticketItem)
+                        Next ticketItem
+                        If unconfirmedRows.Count = 0 Then
                             unlocatedCount = unlocatedCount + 1
                         Else
                             dateText = Format$(CDate(ticketDate), "m月d日")
-                            If rowsToWarn.Count = 1 Then
+                            If unconfirmedRows.Count = 1 Then
                                 warningText = "要確認：給油記録に" & vbCrLf & dateText & "・" & car & "号車・" & _
                                               Format$(ticketAmount, "0.##") & "Lのチケットがありますが、" & vbCrLf & _
                                               "対応する給油入力が確認できません。" & vbCrLf & vbCrLf & _
@@ -1457,7 +1670,7 @@ Private Sub 給油警告を記録シートへ反映(ByVal ticketWS As Worksheet,
                             Else
                                 warningText = "この日の給油チケットが未照合です。どの運転記録に対応するか確認してください。"
                             End If
-                            For Each ticketItem In rowsToWarn
+                            For Each ticketItem In unconfirmedRows
                                 Call 自動チェック警告を追加(logWS.Cells(CLng(ticketItem), gasCol), warningText, noteFailures, "給油照合警告")
                             Next ticketItem
                         End If
@@ -1481,19 +1694,20 @@ Private Sub 給油警告を記録シートへ反映(ByVal ticketWS As Worksheet,
                                    Not reservedAnswers.Exists(CStr(logItem(0))) Then rowsToWarn.Add logItem
                             Next logItem
                         End If
-                        warningText = "要確認：この給油記録には複数の照合候補があります。" & vbCrLf & _
-                                      "自動確定していません。給油記録シートを確認してください。"
+                        Set unconfirmedRows = New Collection
                         For Each candidateLog In rowsToWarn
-                            answer = CStr(candidateLog(0))
-                            For rowNo = 2 To lastLogRow
-                                If Not IsError(logWS.Cells(rowNo, "A").Value) Then
-                                    If Trim$(CStr(logWS.Cells(rowNo, "A").Value)) = answer Then
-                                        Call 自動チェック警告を追加(logWS.Cells(rowNo, gasCol), warningText, noteFailures, "給油照合警告")
-                                        Exit For
-                                    End If
-                                End If
-                            Next rowNo
+                            If Not 記録行は確認済み(logWS, CLng(candidateLog(4))) Then unconfirmedRows.Add candidateLog
                         Next candidateLog
+                        If unconfirmedRows.Count = 0 Then
+                            unlocatedCount = unlocatedCount + 1
+                        Else
+                            warningText = "要確認：この給油記録には複数の照合候補があります。" & vbCrLf & _
+                                          "自動確定していません。給油記録シートを確認してください。"
+                            For Each candidateLog In unconfirmedRows
+                                Call 自動チェック警告を追加(logWS.Cells(CLng(candidateLog(4)), gasCol), _
+                                    warningText, noteFailures, "給油照合警告")
+                            Next candidateLog
+                        End If
                         Exit For
                     End If
                 Next ticketItem
@@ -1506,12 +1720,16 @@ Private Sub 給油警告を記録シートへ反映(ByVal ticketWS As Worksheet,
                       CStr(unlocatedCount) & "件あります。詳細は給油記録シートD:Gを確認してください。"
         Call 自動チェック警告を追加(logWS.Cells(1, gasCol), warningText, noteFailures, "給油照合警告")
     End If
-    If noteFailures > 0 Then MsgBox "給油照合警告の" & noteFailures & "セルでコメントまたは書式を処理できませんでした。確認してください。", vbExclamation
-    Exit Sub
+    If noteFailures > 0 Then
+        MsgBox "給油照合警告の" & noteFailures & "セルでコメントまたは書式を処理できませんでした。確認してください。", vbExclamation
+        Exit Function
+    End If
+    給油警告を記録シートへ反映 = True
+    Exit Function
 Failed:
     MsgBox "記録シートへの給油警告反映を中止しました。" & Err.Description, vbExclamation
     Err.Clear
-End Sub
+End Function
 
 Private Function PrepareTicketOutput(ws As Worksheet) As Boolean
     Dim r As Long, lastRow As Long, activeRow As Boolean, hasOutput As Boolean
@@ -1597,13 +1815,22 @@ End Function
 
 Private Function ReadLogs(ws As Worksheet, ByVal gasCol As Long) As Collection
     Dim answerCounts As Object, result As New Collection
+    Dim answerColumn As Long, vehicleColumn As Long, dateColumn As Long
     Dim r As Long, lastRow As Long, answer As String, car As String, amount As Double
 
+    answerColumn = 記録列番号(ws, "回答番号")
+    vehicleColumn = 記録列番号(ws, "車両番号")
+    dateColumn = 記録列番号(ws, "運転した日")
+    If answerColumn = 0 Or vehicleColumn = 0 Or dateColumn = 0 Or gasCol = 0 Then
+        Set ReadLogs = result
+        Exit Function
+    End If
+
     Set answerCounts = CreateObject("Scripting.Dictionary")
-    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    lastRow = 記録最終行(ws)
     For r = 2 To lastRow
-        If Not IsError(ws.Cells(r, "A").Value) Then
-            answer = Trim$(CStr(ws.Cells(r, "A").Value))
+        If Not IsError(ws.Cells(r, answerColumn).Value) Then
+            answer = Trim$(CStr(ws.Cells(r, answerColumn).Value))
             If Len(answer) > 0 Then
                 If answerCounts.Exists(answer) Then
                     answerCounts(answer) = CLng(answerCounts(answer)) + 1
@@ -1615,12 +1842,16 @@ Private Function ReadLogs(ws As Worksheet, ByVal gasCol As Long) As Collection
     Next r
 
     For r = 2 To lastRow
-        If Not IsError(ws.Cells(r, "A").Value) And Not IsError(ws.Cells(r, "J").Value) And Not IsError(ws.Cells(r, "K").Value) And Not IsError(ws.Cells(r, gasCol).Value) Then
-            answer = Trim$(CStr(ws.Cells(r, "A").Value))
-            car = Trim$(CStr(ws.Cells(r, "J").Value))
+        If Not IsError(ws.Cells(r, answerColumn).Value) And _
+           Not IsError(ws.Cells(r, vehicleColumn).Value) And _
+           Not IsError(ws.Cells(r, dateColumn).Value) And _
+           Not IsError(ws.Cells(r, gasCol).Value) Then
+            answer = Trim$(CStr(ws.Cells(r, answerColumn).Value))
+            car = Trim$(CStr(ws.Cells(r, vehicleColumn).Value))
             If Len(answer) > 0 And Len(car) > 0 Then
-                If IsDate(ws.Cells(r, "K").Value) And PositiveAmount(ws.Cells(r, gasCol).Value, amount) Then
-                    If CLng(answerCounts(answer)) = 1 Then result.Add Array(answer, CDate(ws.Cells(r, "K").Value), car, amount)
+                If IsDate(ws.Cells(r, dateColumn).Value) And PositiveAmount(ws.Cells(r, gasCol).Value, amount) Then
+                    If CLng(answerCounts(answer)) = 1 Then _
+                        result.Add Array(answer, CDate(ws.Cells(r, dateColumn).Value), car, amount, r)
                 End If
             End If
         End If
@@ -1766,11 +1997,232 @@ Private Sub WriteTicketResults(ws As Worksheet, tickets As Collection, statuses 
     Next key
 End Sub
 
-Private Function HeaderColumn(ws As Worksheet, text As String) As Long
-    Dim c As Long
-    For c = 1 To ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
-        If Trim$(CStr(ws.Cells(1, c).Value)) = text Then HeaderColumn = c: Exit Function
-    Next c
+Public Function 記録列番号(ByVal ws As Worksheet, ByVal text As String) As Long
+    記録列番号 = HeaderColumn(ws, text)
+End Function
+
+Public Function 記録最終列(ByVal ws As Worksheet) As Long
+    Dim headerBound As Long
+    headerBound = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    If headerBound >= 1 Then 記録最終列 = headerBound
+End Function
+
+Public Function 記録最終行(ByVal ws As Worksheet) As Long
+    Dim answerColumn As Long, lastColumn As Long, columnNo As Long, candidateRow As Long
+    answerColumn = HeaderColumn(ws, "回答番号")
+    If answerColumn = 0 Then Exit Function
+    lastColumn = 記録最終列(ws)
+    For columnNo = 2 To lastColumn
+        candidateRow = ws.Cells(ws.Rows.Count, columnNo).End(xlUp).Row
+        If candidateRow > 記録最終行 Then 記録最終行 = candidateRow
+    Next columnNo
+    If 記録最終行 < 2 Then 記録最終行 = 1
+End Function
+
+Public Function 確認チェックマーク() As String
+    確認チェックマーク = ChrW(&H2713)
+End Function
+
+Public Function 記録行に回答番号あり(ByVal ws As Worksheet, ByVal rowNo As Long) As Boolean
+    Dim answerColumn As Long
+    answerColumn = 記録列番号(ws, "回答番号")
+    If answerColumn = 0 Or rowNo < 2 Then Exit Function
+    記録行に回答番号あり = (Len(回答番号をキー化(ws.Cells(rowNo, answerColumn).Value)) > 0)
+End Function
+
+Public Function 記録行は確認済み(ByVal ws As Worksheet, ByVal rowNo As Long) As Boolean
+    Dim checkColumn As Long, checkValue As Variant
+    checkColumn = 記録列番号(ws, "チェック")
+    If rowNo < 2 Then Exit Function
+    If checkColumn = 0 Then
+        ' チェック列が欠落または重複し状態を特定できない場合は、マクロの書換えを禁止する。
+        記録行は確認済み = True
+        Exit Function
+    End If
+    checkValue = ws.Cells(rowNo, checkColumn).Value
+    If IsError(checkValue) Or IsEmpty(checkValue) Then Exit Function
+    記録行は確認済み = (CStr(checkValue) = 確認チェックマーク())
+End Function
+
+Public Function 未解決自動警告(ByVal ws As Worksheet, ByVal rowNo As Long, _
+                              ByRef warningNames As String, ByRef firstWarningCell As Range) As Boolean
+    Dim checkColumn As Long, answerColumn As Long, lastColumn As Long, columnNo As Long
+    Dim target As Range, note As Comment, noteText As String, headerValue As Variant
+    Dim hasWarning As Boolean, warningSet As Object, colorValue As Variant
+
+    On Error GoTo WarningReadFailed
+    Set firstWarningCell = Nothing
+    warningNames = ""
+    answerColumn = HeaderColumn(ws, "回答番号")
+    checkColumn = HeaderColumn(ws, "チェック")
+    lastColumn = 記録最終列(ws)
+    If answerColumn = 0 Or checkColumn = 0 Or rowNo < 2 Then Exit Function
+
+    Set warningSet = CreateObject("Scripting.Dictionary")
+    warningSet.CompareMode = vbTextCompare
+    For columnNo = 2 To lastColumn
+        If columnNo <> checkColumn Then
+            Set target = ws.Cells(rowNo, columnNo)
+            Set note = target.Comment
+            If Not note Is Nothing Then
+                noteText = note.Text
+                If InStr(1, noteText, CHECK_WARNING_START, vbBinaryCompare) > 0 Then
+                    If InStr(1, noteText, CHECK_WARNING_END, vbBinaryCompare) = 0 Then
+                        ' 不完全な自動管理コメントも、赤字が残る場合は安全側で未解決とする。
+                    End If
+                    colorValue = target.Font.Color
+                    If IsNull(colorValue) Or IsError(colorValue) Then
+                        hasWarning = True
+                    Else
+                        hasWarning = (CLng(colorValue) = vbRed)
+                    End If
+                    If hasWarning Then
+                        If firstWarningCell Is Nothing Then Set firstWarningCell = target
+                        headerValue = ws.Cells(1, columnNo).Value
+                        If IsError(headerValue) Or Len(Trim$(CStr(headerValue))) = 0 Then
+                            warningSet("列" & CStr(columnNo)) = True
+                        Else
+                            warningSet(Trim$(CStr(headerValue))) = True
+                        End If
+                    End If
+                End If
+            End If
+        End If
+    Next columnNo
+    If warningSet.Count > 0 Then
+        warningNames = Join(warningSet.Keys, "、")
+        未解決自動警告 = True
+    End If
+    Exit Function
+WarningReadFailed:
+    warningNames = "自動警告情報"
+    If firstWarningCell Is Nothing Then Set firstWarningCell = ws.Cells(rowNo, answerColumn)
+    未解決自動警告 = True
+    Err.Clear
+End Function
+
+Public Function 記録行は確認可能(ByVal ws As Worksheet, ByVal rowNo As Long, _
+                              ByRef reasonText As String, ByRef firstWarningCell As Range) As Boolean
+    Dim answerColumn As Long, warningNames As String, answerValue As Variant
+    reasonText = ""
+    Set firstWarningCell = Nothing
+    answerColumn = HeaderColumn(ws, "回答番号")
+    If answerColumn = 0 Then
+        reasonText = "回答番号の見出しを確認してください。"
+        Exit Function
+    End If
+    answerValue = ws.Cells(rowNo, answerColumn).Value
+    If Not 記録行に回答番号あり(ws, rowNo) Then
+        reasonText = "この行に有効な回答番号がありません。"
+        Exit Function
+    End If
+    If 回答番号行を検索(ws, 回答番号をキー化(answerValue)) <> rowNo Then
+        reasonText = "回答番号が重複しているため、一意に確認できません。"
+        Exit Function
+    End If
+    If 未解決自動警告(ws, rowNo, warningNames, firstWarningCell) Then
+        reasonText = "この記録には未確認の警告が残っています。" & vbCrLf & "・" & Replace(warningNames, "、", vbCrLf & "・")
+        Exit Function
+    End If
+    記録行は確認可能 = True
+End Function
+
+Public Sub 未確認行を自動確定(ByVal ws As Worksheet, ByRef confirmedCount As Long, _
+                            ByRef reviewCount As Long, ByVal allowAutoConfirmation As Boolean)
+    Dim answerColumn As Long, checkColumn As Long, lastRow As Long, rowNo As Long
+    Dim answerValue As Variant, checkValue As Variant, reasonText As String, firstWarningCell As Range
+    Dim oldEvents As Boolean, eventsCaptured As Boolean
+
+    On Error GoTo ConfirmFailed
+    confirmedCount = 0
+    reviewCount = 0
+    answerColumn = HeaderColumn(ws, "回答番号")
+    checkColumn = HeaderColumn(ws, "チェック")
+    lastRow = 記録最終行(ws)
+    If answerColumn = 0 Then
+        If lastRow > 1 Then reviewCount = lastRow - 1
+        Exit Sub
+    End If
+    If checkColumn = 0 Then
+        For rowNo = 2 To lastRow
+            If Len(回答番号をキー化(ws.Cells(rowNo, answerColumn).Value)) > 0 Then reviewCount = reviewCount + 1
+        Next rowNo
+        Exit Sub
+    End If
+
+    For rowNo = 2 To lastRow
+        answerValue = ws.Cells(rowNo, answerColumn).Value
+        If Len(回答番号をキー化(answerValue)) > 0 Then
+            If Not 記録行は確認済み(ws, rowNo) Then
+                If 回答番号行を検索(ws, 回答番号をキー化(answerValue)) <> rowNo Then
+                    reviewCount = reviewCount + 1
+                Else
+                    checkValue = ws.Cells(rowNo, checkColumn).Value
+                    If セルに値がある(checkValue) Then
+                        reviewCount = reviewCount + 1
+                    ElseIf allowAutoConfirmation And 記録行は確認可能(ws, rowNo, reasonText, firstWarningCell) Then
+                        oldEvents = Application.EnableEvents
+                        eventsCaptured = True
+                        Application.EnableEvents = False
+                        ws.Cells(rowNo, checkColumn).Value = 確認チェックマーク()
+                        ws.Cells(rowNo, checkColumn).HorizontalAlignment = xlCenter
+                        Application.EnableEvents = oldEvents
+                        eventsCaptured = False
+                        confirmedCount = confirmedCount + 1
+                    Else
+                        reviewCount = reviewCount + 1
+                    End If
+                End If
+            End If
+        End If
+    Next rowNo
+    Exit Sub
+ConfirmFailed:
+    If eventsCaptured Then Application.EnableEvents = oldEvents
+    reviewCount = reviewCount + 1
+    MsgBox "確認済みチェックを安全に更新できませんでした。" & Err.Description, vbExclamation
+    Err.Clear
+End Sub
+
+Private Function HeaderColumn(ByVal ws As Worksheet, ByVal text As String) As Long
+    Dim columnNo As Long, lastColumn As Long, headerValue As Variant, foundColumn As Long
+    lastColumn = 記録最終列(ws)
+    For columnNo = 1 To lastColumn
+        headerValue = ws.Cells(1, columnNo).Value
+        If Not IsError(headerValue) And Not IsEmpty(headerValue) Then
+            If HeaderNameKey(CStr(headerValue)) = HeaderNameKey(text) Then
+                If foundColumn > 0 Then
+                    HeaderColumn = 0
+                    Exit Function
+                End If
+                foundColumn = columnNo
+            End If
+        End If
+    Next columnNo
+    HeaderColumn = foundColumn
+End Function
+
+Private Function HeaderNameKey(ByVal text As String) As String
+    text = Replace(Replace(Replace(Replace(text, vbCr, ""), vbLf, ""), vbTab, ""), " ", "")
+    HeaderNameKey = Replace(text, "　", "")
+End Function
+
+Private Function HeaderColumnContaining(ByVal ws As Worksheet, ByVal text As String) As Long
+    Dim columnNo As Long, lastColumn As Long, headerValue As Variant, foundColumn As Long
+    lastColumn = 記録最終列(ws)
+    For columnNo = 1 To lastColumn
+        headerValue = ws.Cells(1, columnNo).Value
+        If Not IsError(headerValue) And Not IsEmpty(headerValue) Then
+            If InStr(1, CStr(headerValue), text, vbTextCompare) > 0 Then
+                If foundColumn > 0 Then
+                    HeaderColumnContaining = 0
+                    Exit Function
+                End If
+                foundColumn = columnNo
+            End If
+        End If
+    Next columnNo
+    HeaderColumnContaining = foundColumn
 End Function
 
 Private Function PositiveAmount(v As Variant, ByRef n As Double) As Boolean
@@ -1780,20 +2232,65 @@ End Function
 
 Sub 転記to印刷様式()
     Dim wsSrc As Worksheet, wsDest As Worksheet
+    Dim answerColumn As Long, vehicleColumn As Long, dateColumn As Long
+    Dim weatherColumn As Long, conditionColumn As Long, startTimeColumn As Long, endTimeColumn As Long
+    Dim destinationColumn As Long, startMeterColumn As Long, endMeterColumn As Long
+    Dim dutyColumn As Long, passengerColumn As Long, driverColumn As Long
+    Dim gasolineColumn As Long, dieselColumn As Long, oilColumn As Long, fuelLevelColumn As Long
+    Dim beforeCheckerColumn As Long, beforeOtherColumn As Long, beforeMethodColumn As Long
+    Dim beforePresenceColumn As Long, beforeValueColumn As Long
+    Dim afterCheckerColumn As Long, afterOtherColumn As Long, afterMethodColumn As Long
+    Dim afterPresenceColumn As Long, afterValueColumn As Long, specialColumn As Long
+    Dim carNo As String, ansStart As Long, ansEnd As Long, i As Long, destTopRow As Long
+    Dim fuelShapeIndex As Long, fuelLevel As Long, fuelCell As Range, halfFuelShape As Shape
+    Dim rowCount As Long, lastRow As Long
+
     Set wsSrc = ThisWorkbook.Sheets("記録")
     Set wsDest = ThisWorkbook.Sheets("印刷様式")
+    answerColumn = 記録列番号(wsSrc, "回答番号")
+    vehicleColumn = 記録列番号(wsSrc, "車両番号")
+    dateColumn = 記録列番号(wsSrc, "運転した日")
+    weatherColumn = 記録列番号(wsSrc, "天気")
+    conditionColumn = 記録列番号(wsSrc, "自動車の状況")
+    startTimeColumn = 記録列番号(wsSrc, "使用時間（始）")
+    endTimeColumn = 記録列番号(wsSrc, "使用時間（終）")
+    destinationColumn = 記録列番号(wsSrc, "行先")
+    startMeterColumn = 記録列番号(wsSrc, "始業時メーター(km)")
+    endMeterColumn = 記録列番号(wsSrc, "終業時メーター(km)")
+    dutyColumn = 記録列番号(wsSrc, "用務")
+    passengerColumn = 記録列番号(wsSrc, "乗車人数")
+    driverColumn = 記録列番号(wsSrc, "運転者氏名")
+    gasolineColumn = 記録列番号(wsSrc, GASOLINE_FUEL_HEADER)
+    dieselColumn = HeaderColumnContaining(wsSrc, "軽油給油の有無")
+    oilColumn = HeaderColumnContaining(wsSrc, "オイル給油の有無")
+    fuelLevelColumn = HeaderColumnContaining(wsSrc, "燃料残量")
+    beforeCheckerColumn = HeaderColumnContaining(wsSrc, "確認者（運転前）")
+    beforeOtherColumn = 記録列番号(wsSrc, "確認者運転前（その他）")
+    beforeMethodColumn = 記録列番号(wsSrc, "確認方法（運転前）")
+    beforePresenceColumn = 記録列番号(wsSrc, "酒気帯びの有無（運転前）")
+    beforeValueColumn = 記録列番号(wsSrc, "アルコール検知器の数値（運転前）")
+    afterCheckerColumn = HeaderColumnContaining(wsSrc, "確認者（運転後）")
+    afterOtherColumn = 記録列番号(wsSrc, "確認者運転後（その他）")
+    afterMethodColumn = 記録列番号(wsSrc, "確認方法（運転後）")
+    afterPresenceColumn = 記録列番号(wsSrc, "酒気帯びの有無（運転後）")
+    afterValueColumn = 記録列番号(wsSrc, "アルコール検知器の数値（運転後）")
+    specialColumn = 記録列番号(wsSrc, "特記事項")
 
-    Dim carNo As String
-    Dim ansStart As Long, ansEnd As Long
-    Dim i As Long, destTopRow As Long
-    Dim fuelShapeIndex As Long
-    Dim fuelCell As Range, halfFuelShape As Shape
-    Dim rowCount As Integer: rowCount = 0
+    If answerColumn = 0 Or vehicleColumn = 0 Or dateColumn = 0 Or weatherColumn = 0 Or _
+       conditionColumn = 0 Or startTimeColumn = 0 Or endTimeColumn = 0 Or destinationColumn = 0 Or _
+       startMeterColumn = 0 Or endMeterColumn = 0 Or dutyColumn = 0 Or passengerColumn = 0 Or _
+       driverColumn = 0 Or gasolineColumn = 0 Or dieselColumn = 0 Or oilColumn = 0 Or _
+       fuelLevelColumn = 0 Or beforeCheckerColumn = 0 Or beforeOtherColumn = 0 Or _
+       beforeMethodColumn = 0 Or beforePresenceColumn = 0 Or beforeValueColumn = 0 Or _
+       afterCheckerColumn = 0 Or afterOtherColumn = 0 Or afterMethodColumn = 0 Or _
+       afterPresenceColumn = 0 Or afterValueColumn = 0 Or specialColumn = 0 Then
+        MsgBox "記録シートの転記に必要な見出しが見つからないため中止しました。", vbExclamation
+        Exit Sub
+    End If
 
-    carNo = wsDest.Range("N2").Value
+    carNo = CStr(wsDest.Range("N2").Value)
     ansStart = wsDest.Range("O2").Value
     ansEnd = wsDest.Range("P2").Value
-
     If carNo = "" Or ansStart = 0 Or ansEnd = 0 Then
         MsgBox "N2～P2に車両番号・開始回答番号・終了回答番号を入力してください。", vbExclamation
         Exit Sub
@@ -1805,35 +2302,29 @@ Sub 転記to印刷様式()
         End If
     Next fuelShapeIndex
 
-    For i = 2 To wsSrc.Cells(wsSrc.Rows.Count, "A").End(xlUp).Row
-        If wsSrc.Cells(i, "J").Value = carNo Then
-            If wsSrc.Cells(i, "A").Value >= ansStart And wsSrc.Cells(i, "A").Value <= ansEnd Then
-                destTopRow = 3 + rowCount * 22 ' 21行使用＋1行空き
-
+    lastRow = 記録最終行(wsSrc)
+    For i = 2 To lastRow
+        If wsSrc.Cells(i, vehicleColumn).Value = carNo Then
+            If wsSrc.Cells(i, answerColumn).Value >= ansStart And wsSrc.Cells(i, answerColumn).Value <= ansEnd Then
+                destTopRow = 3 + rowCount * 22
                 With wsDest
-                    .Range("A" & destTopRow).Value = wsSrc.Cells(i, "K").Value ' 運転した日
-                    .Range("D" & destTopRow).Value = wsSrc.Cells(i, "L").Value ' 天気
-                    .Range("G" & destTopRow).Value = wsSrc.Cells(i, "M").Value ' 自動車の状況
-                    .Range("J" & destTopRow).Value = wsSrc.Cells(i, "J").Value ' 車両番号
+                    .Range("A" & destTopRow).Value = wsSrc.Cells(i, dateColumn).Value
+                    .Range("D" & destTopRow).Value = wsSrc.Cells(i, weatherColumn).Value
+                    .Range("G" & destTopRow).Value = wsSrc.Cells(i, conditionColumn).Value
+                    .Range("J" & destTopRow).Value = wsSrc.Cells(i, vehicleColumn).Value
+                    .Range("B" & (destTopRow + 2)).Value = wsSrc.Cells(i, startTimeColumn).Value
+                    .Range("B" & (destTopRow + 3)).Value = wsSrc.Cells(i, endTimeColumn).Value
+                    .Range("D" & (destTopRow + 2)).Value = wsSrc.Cells(i, destinationColumn).Value
+                    .Range("D" & (destTopRow + 3)).Value = wsSrc.Cells(i, startMeterColumn).Value
+                    .Range("D" & (destTopRow + 4)).Value = wsSrc.Cells(i, endMeterColumn).Value
+                    .Range("E" & (destTopRow + 2)).Value = wsSrc.Cells(i, dutyColumn).Value
+                    .Range("G" & (destTopRow + 3)).Value = wsSrc.Cells(i, passengerColumn).Value
+                    .Range("H" & (destTopRow + 3)).Value = wsSrc.Cells(i, driverColumn).Value
+                    .Range("K" & (destTopRow + 2)).Value = wsSrc.Cells(i, gasolineColumn).Value
+                    .Range("K" & (destTopRow + 3)).Value = wsSrc.Cells(i, dieselColumn).Value
+                    .Range("K" & (destTopRow + 4)).Value = wsSrc.Cells(i, oilColumn).Value
 
-                    .Range("B" & (destTopRow + 2)).Value = wsSrc.Cells(i, "N").Value ' 使用時間（始）
-                    .Range("B" & (destTopRow + 3)).Value = wsSrc.Cells(i, "O").Value ' 使用時間（終）
-
-                    .Range("D" & (destTopRow + 2)).Value = wsSrc.Cells(i, "R").Value ' 行先
-                    .Range("D" & (destTopRow + 3)).Value = wsSrc.Cells(i, "P").Value ' 始業メーター
-                    .Range("D" & (destTopRow + 4)).Value = wsSrc.Cells(i, "Q").Value ' 終業メーター
-
-                    .Range("E" & (destTopRow + 2)).Value = wsSrc.Cells(i, "T").Value ' 用務
-                    .Range("G" & (destTopRow + 3)).Value = wsSrc.Cells(i, "V").Value ' 乗車人数
-                    .Range("H" & (destTopRow + 3)).Value = wsSrc.Cells(i, "W").Value ' 運転者氏名
-
-                    .Range("K" & (destTopRow + 2)).Value = wsSrc.Cells(i, "X").Value ' ガソリン給油
-                    .Range("K" & (destTopRow + 3)).Value = wsSrc.Cells(i, "Z").Value ' 軽油給油
-                    .Range("K" & (destTopRow + 4)).Value = wsSrc.Cells(i, "AB").Value ' オイル給油
-
-                    ' --- 燃料残量（L列） ---
-                    Dim fuelLevel As Long
-                    fuelLevel = val(Trim(wsSrc.Cells(i, "AD").Value))
+                    fuelLevel = Val(Trim$(CStr(wsSrc.Cells(i, fuelLevelColumn).Value)))
                     Set fuelCell = .Range("L" & (destTopRow + 3))
                     If fuelLevel = 1 Then
                         fuelCell.ClearContents
@@ -1857,18 +2348,13 @@ Sub 転記to印刷様式()
                         fuelCell.Value = ""
                     End If
 
-                    ' --- 酒気帯びチェック（運転前） ---
-                    Call 転記_確認者チェック(wsSrc, wsDest, i, destTopRow + 6, "AE", "AF", "AG", "AH", "AI")
-
-                    ' --- 酒気帯びチェック（運転後） ---
-                    Call 転記_確認者チェック(wsSrc, wsDest, i, destTopRow + 12, "AJ", "AK", "AL", "AM", "AN")
-
-                    ' --- 特記事項 ---
-                    .Range("B" & (destTopRow + 18)).Value = wsSrc.Cells(i, "AO").Value
+                    Call 転記_確認者チェック(wsSrc, wsDest, i, destTopRow + 6, _
+                        beforeCheckerColumn, beforeOtherColumn, beforeMethodColumn, beforePresenceColumn, beforeValueColumn)
+                    Call 転記_確認者チェック(wsSrc, wsDest, i, destTopRow + 12, _
+                        afterCheckerColumn, afterOtherColumn, afterMethodColumn, afterPresenceColumn, afterValueColumn)
+                    .Range("B" & (destTopRow + 18)).Value = wsSrc.Cells(i, specialColumn).Value
                 End With
-
                 rowCount = rowCount + 1
-                ' ← 行数制限は削除！
             End If
         End If
     Next i
@@ -1892,7 +2378,7 @@ Private Function 燃料残量表示開始位置(ByVal targetCell As Range) As Do
 End Function
 
 Sub 転記_確認者チェック(wsSrc As Worksheet, wsDest As Worksheet, rowSrc As Long, baseRow As Long, _
-                          col確認者 As String, colその他 As String, col方法 As String, col有無 As String, col数値 As String)
+                          col確認者 As Long, colその他 As Long, col方法 As Long, col有無 As Long, col数値 As Long)
 
     Dim val確認者 As String: val確認者 = wsSrc.Cells(rowSrc, col確認者).Value
     Dim val方法 As String: val方法 = wsSrc.Cells(rowSrc, col方法).Value
