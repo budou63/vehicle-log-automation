@@ -222,6 +222,7 @@ AddFailed:
 End Function
 Public Sub 入力内容チェック()
     Call 入力内容チェック実行(True)
+    Call 給油記録を照合実行(False)
     Call 車両候補確認画面を表示
 End Sub
 
@@ -928,6 +929,10 @@ Private Sub 記録シート整理を実行(ByVal 結果表示 As Boolean)
 End Sub
 
 Public Sub 給油記録を照合()
+    Call 給油記録を照合実行(True)
+End Sub
+
+Private Function 給油記録を照合実行(ByVal 結果表示 As Boolean) As Boolean
     Dim ticketWS As Worksheet, logWS As Worksheet
     Dim tickets As Collection, logs As Collection
     Dim statuses As Object, matches As Object, usedTickets As Object, usedLogs As Object
@@ -940,9 +945,9 @@ Public Sub 給油記録を照合()
     gasCol = HeaderColumn(logWS, GASOLINE_FUEL_HEADER)
     If gasCol = 0 Then
         MsgBox "記録シートのガソリン給油列が見つかりません。", vbExclamation
-        Exit Sub
+        Exit Function
     End If
-    If Not PrepareTicketOutput(ticketWS) Then Exit Sub
+    If Not PrepareTicketOutput(ticketWS) Then Exit Function
 
     Set statuses = CreateObject("Scripting.Dictionary")
     Set tickets = ReadTickets(ticketWS, statuses)
@@ -957,14 +962,15 @@ Public Sub 給油記録を照合()
     ReserveAmbiguousSameDay tickets, logs, usedTickets, usedLogs, reservedSameDayTickets, reservedSameDayLogs
     ResolveStage tickets, logs, usedTickets, usedLogs, matches, reservedSameDayTickets, reservedSameDayLogs, False
     SetRemainingStatuses tickets, logs, statuses, usedTickets, usedLogs, matches, reservedSameDayTickets, reservedSameDayLogs
-    If Not ResetManagedTicketOutput(ticketWS) Then Exit Sub
+    If Not ResetManagedTicketOutput(ticketWS) Then Exit Function
     WriteTicketResults ticketWS, tickets, statuses, matches
 
-    MsgBox "給油記録の照合が完了しました。", vbInformation
-    Exit Sub
+    If 結果表示 Then MsgBox "給油記録の照合が完了しました。", vbInformation
+    給油記録を照合実行 = True
+    Exit Function
 Failed:
     MsgBox "給油照合を中止しました。" & Err.Description, vbExclamation
-End Sub
+End Function
 
 Private Function PrepareTicketOutput(ws As Worksheet) As Boolean
     Dim r As Long, lastRow As Long, activeRow As Boolean, hasOutput As Boolean
