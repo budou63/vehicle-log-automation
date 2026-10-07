@@ -1786,6 +1786,8 @@ Sub 転記to印刷様式()
     Dim carNo As String
     Dim ansStart As Long, ansEnd As Long
     Dim i As Long, destTopRow As Long
+    Dim fuelShapeIndex As Long
+    Dim fuelCell As Range, halfFuelShape As Shape
     Dim rowCount As Integer: rowCount = 0
 
     carNo = wsDest.Range("N2").Value
@@ -1796,6 +1798,12 @@ Sub 転記to印刷様式()
         MsgBox "N2～P2に車両番号・開始回答番号・終了回答番号を入力してください。", vbExclamation
         Exit Sub
     End If
+
+    For fuelShapeIndex = wsDest.Shapes.Count To 1 Step -1
+        If Left(wsDest.Shapes(fuelShapeIndex).Name, Len("FuelRemainHalf_")) = "FuelRemainHalf_" Then
+            wsDest.Shapes(fuelShapeIndex).Delete
+        End If
+    Next fuelShapeIndex
 
     For i = 2 To wsSrc.Cells(wsSrc.Rows.Count, "A").End(xlUp).Row
         If wsSrc.Cells(i, "J").Value = carNo Then
@@ -1826,10 +1834,28 @@ Sub 転記to印刷様式()
                     ' --- 燃料残量（L列） ---
                     Dim fuelLevel As Long
                     fuelLevel = val(Trim(wsSrc.Cells(i, "AD").Value))
-                    If fuelLevel >= 2 And fuelLevel <= 5 Then
-                        .Range("L" & (destTopRow + 3)).Value = String(fuelLevel - 1, "■")
+                    Set fuelCell = .Range("L" & (destTopRow + 3))
+                    If fuelLevel = 1 Then
+                        fuelCell.ClearContents
+                        Set halfFuelShape = .Shapes.AddShape( _
+                            msoShapeRectangle, _
+                            燃料残量表示開始位置(fuelCell), _
+                            fuelCell.Top + (fuelCell.Height - fuelCell.Font.Size) / 2, _
+                            fuelCell.Font.Size / 2, _
+                            fuelCell.Font.Size)
+                        With halfFuelShape
+                            .Name = "FuelRemainHalf_" & CStr(fuelCell.Row)
+                            .Placement = xlMoveAndSize
+                            .PrintObject = True
+                            .Fill.Visible = msoTrue
+                            .Fill.Solid
+                            .Fill.ForeColor.RGB = RGB(0, 0, 0)
+                            .Line.Visible = msoFalse
+                        End With
+                    ElseIf fuelLevel >= 2 And fuelLevel <= 5 Then
+                        fuelCell.Value = String(fuelLevel - 1, "■")
                     Else
-                        .Range("L" & (destTopRow + 3)).Value = ""
+                        fuelCell.Value = ""
                     End If
 
                     ' --- 酒気帯びチェック（運転前） ---
@@ -1850,6 +1876,21 @@ Sub 転記to印刷様式()
 
     MsgBox rowCount & " 件のデータを印刷様式に転記しました。", vbInformation
 End Sub
+
+Private Function 燃料残量表示開始位置(ByVal targetCell As Range) As Double
+    Dim existingShape As Shape
+    For Each existingShape In targetCell.Worksheet.Shapes
+        If existingShape.Type = msoGroup Then
+            If existingShape.TopLeftCell.Row = targetCell.Row And _
+               existingShape.TopLeftCell.Column = targetCell.Column Then
+                燃料残量表示開始位置 = existingShape.Left
+                Exit Function
+            End If
+        End If
+    Next existingShape
+
+    燃料残量表示開始位置 = targetCell.Left + targetCell.IndentLevel * targetCell.Font.Size
+End Function
 
 Sub 転記_確認者チェック(wsSrc As Worksheet, wsDest As Worksheet, rowSrc As Long, baseRow As Long, _
                           col確認者 As String, colその他 As String, col方法 As String, col有無 As String, col数値 As String)
