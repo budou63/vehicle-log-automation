@@ -78,7 +78,7 @@ class T(unittest.TestCase):
   self.assertEqual(reconcile(ticket,duplicates)[0][0],'未照合')
  def test_vba_rejects_duplicate_and_blank_answers_and_preserves_input_columns(self):
   from pathlib import Path
-  source=(Path(__file__).parents[1] / 'FuelReconciliation.bas').read_text(encoding='utf-8')
+  source=(Path(__file__).parents[1] / 'Module1').read_text(encoding='utf-8')
   self.assertIn('If Len(answer) > 0 Then',source)
   self.assertIn('If CLng(answerCounts(answer)) = 1 Then',source)
   self.assertIn('lastRow = LastTicketInputRow(ws)',source)
@@ -90,10 +90,23 @@ class T(unittest.TestCase):
   self.assertIn('Not reservedTickets.Exists(ticketKey)',source)
   self.assertIn('Not reservedLogs.Exists(CStr(logItem(0)))',source)
   self.assertNotRegex(source,r'(?im)^\s*ws\.Cells\([^\n]*,\s*"[ABC]"\)\s*=')
-  self.assertIn('If activeRow And hasOutput And Trim$(CStr(ws.Cells(r, "H").Value)) <> OUTPUT_MARKER Then',source)
+  self.assertIn('If activeRow And hasOutput And Trim$(CStr(ws.Cells(r, "H").Value)) <> FUEL_OUTPUT_MARKER Then',source)
+ def test_module1_procedure_and_for_next_structure(self):
+  from pathlib import Path
+  import re
+  source=(Path(__file__).parents[1] / 'Module1').read_text(encoding='utf-8')
+  code='\n'.join(re.sub(r"'.*$",'',re.sub(r'"(?:[^"]|"")*"','""',line)) for line in source.splitlines())
+  declarations=len(re.findall(r'(?im)^\s*(?:(?:Public|Private)\s+)?(?:Sub|Function)\s+\w+',code))
+  endings=len(re.findall(r'(?im)^\s*End\s+(?:Sub|Function)\b',code))
+  for_loops=len(re.findall(r'(?i)\bFor\s+(?:Each\s+)?\w+\s*(?:=|In)',code))
+  next_loops=len(re.findall(r'(?i)\bNext\b',code))-len(re.findall(r'(?i)\bOn\s+Error\s+Resume\s+Next\b',code))
+  self.assertEqual(declarations,endings)
+  self.assertEqual(for_loops,next_loops)
+  self.assertRegex(code,r'(?is)For Each key In statuses\.Keys\s+If Not allRows\.Exists\(CStr\(key\)\) Then\s+allRows\.Add CStr\(key\), True\s+End If\s+Next key')
+  self.assertRegex(code,r'(?is)For Each key In allRows\.Keys.*?Next key')
  def test_current_vba_requires_replacement(self):
   from pathlib import Path
-  source=(Path(__file__).parents[1] / 'FuelReconciliation.bas').read_text(encoding='utf-8')
+  source=(Path(__file__).parents[1] / 'Module1').read_text(encoding='utf-8')
   self.assertNotIn('TARGET_CAR',source)
   self.assertNotIn('TARGET_START',source)
   self.assertNotIn('GetResultSheet',source)
