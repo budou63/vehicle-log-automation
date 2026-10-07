@@ -220,8 +220,220 @@ Private Function 取込履歴へ追加(ByVal historyWS As Worksheet, ByVal histo
 AddFailed:
     Err.Clear
 End Function
+Public Sub 運転者名マスタを初期作成()
+    Dim ws As Worksheet, masterWS As Worksheet, lastRow As Long, rowNo As Long, outputRow As Long
+    Dim rawValue As Variant, driverName As String, names As Object, existingA As Long, existingB As Long
+
+    On Error GoTo Failed
+    Set ws = ThisWorkbook.Worksheets("記録")
+    On Error Resume Next
+    Set masterWS = ThisWorkbook.Worksheets("運転者名マスタ")
+    On Error GoTo Failed
+    If masterWS Is Nothing Then
+        Set masterWS = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+        masterWS.Name = "運転者名マスタ"
+    Else
+        existingA = masterWS.Cells(masterWS.Rows.Count, "A").End(xlUp).Row
+        existingB = masterWS.Cells(masterWS.Rows.Count, "B").End(xlUp).Row
+        If existingA > 1 Or (Len(Trim$(CStr(masterWS.Cells(1, "A").Value))) > 0 And _
+                              CStr(masterWS.Cells(1, "A").Value) <> "正式な運転者氏名") Then
+            MsgBox "運転者名マスタのA列に既存データがあるため、上書きしませんでした。", vbExclamation
+            Exit Sub
+        End If
+        If existingB > 1 Or (Len(Trim$(CStr(masterWS.Cells(1, "B").Value))) > 0 And _
+                              CStr(masterWS.Cells(1, "B").Value) <> "メモ") Then
+            MsgBox "運転者名マスタのB列に既存データがあるため、上書きしませんでした。", vbExclamation
+            Exit Sub
+        End If
+    End If
+
+    masterWS.Cells(1, "A").Value = "正式な運転者氏名"
+    masterWS.Cells(1, "B").Value = "メモ"
+    Set names = CreateObject("Scripting.Dictionary")
+    names.CompareMode = vbBinaryCompare
+    lastRow = ws.Cells(ws.Rows.Count, "W").End(xlUp).Row
+    outputRow = 2
+    For rowNo = 2 To lastRow
+        rawValue = ws.Cells(rowNo, "W").Value
+        If Not IsError(rawValue) And Not IsEmpty(rawValue) Then
+            driverName = 運転者名の前後空白を除去(CStr(rawValue))
+            If Len(driverName) > 0 Then
+                If Not names.Exists(driverName) Then
+                    names.Add driverName, True
+                    masterWS.Cells(outputRow, "A").Value = driverName
+                    masterWS.Cells(outputRow, "B").Value = "初期抽出・要確認"
+                    outputRow = outputRow + 1
+                End If
+            End If
+        End If
+    Next rowNo
+    MsgBox "運転者名マスタを作成しました。" & CStr(outputRow - 2) & "件を抽出しました。内容を確認してください。", vbInformation
+    Exit Sub
+Failed:
+    MsgBox "運転者名マスタを作成できませんでした。" & Err.Description, vbExclamation
+    Err.Clear
+End Sub
+
+Private Sub 運転者氏名をチェック()
+    Dim ws As Worksheet, masterWS As Worksheet, names As Collection
+    Dim lastRow As Long, lastNameRow As Long, rowNo As Long, errorCount As Long
+    Dim rawValue As Variant, driverName As String, warning As Variant
+    Dim driverWarnings As Collection
+
+    On Error GoTo Failed
+    Set ws = ThisWorkbook.Worksheets("記録")
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    If ws.Cells(ws.Rows.Count, "W").End(xlUp).Row > lastRow Then lastRow = ws.Cells(ws.Rows.Count, "W").End(xlUp).Row
+    For rowNo = 2 To lastRow
+        Call セルの自動チェック警告カテゴリを除去(ws.Cells(rowNo, "W"), errorCount, "運転者名警告")
+    Next rowNo
+
+    On Error Resume Next
+    Set masterWS = ThisWorkbook.Worksheets("運転者名マスタ")
+    On Error GoTo Failed
+    If masterWS Is Nothing Then GoTo MasterMissing
+    lastNameRow = masterWS.Cells(masterWS.Rows.Count, "A").End(xlUp).Row
+    Set names = New Collection
+    For rowNo = 2 To lastNameRow
+        rawValue = masterWS.Cells(rowNo, "A").Value
+        If Not IsError(rawValue) And Not IsEmpty(rawValue) Then
+            driverName = 運転者名の前後空白を除去(CStr(rawValue))
+            If Len(driverName) > 0 Then names.Add driverName
+        End If
+    Next rowNo
+    If names.Count = 0 Then GoTo MasterMissing
+
+    For rowNo = 2 To lastRow
+        rawValue = ws.Cells(rowNo, "W").Value
+        If IsError(rawValue) Then
+            Call 自動チェック警告を追加(ws.Cells(rowNo, "W"), "要確認：運転者氏名を読み取れません。入力値を確認してください。", errorCount, "運転者名警告")
+        ElseIf Not IsEmpty(rawValue) Then
+            driverName = CStr(rawValue)
+            If Len(運転者名の前後空白を除去(driverName)) > 0 Then
+                Set driverWarnings = 運転者名警告一覧(driverName, names)
+                For Each warning In driverWarnings
+                    Call 自動チェック警告を追加(ws.Cells(rowNo, "W"), CStr(warning), errorCount, "運転者名警告")
+                Next warning
+            End If
+        End If
+    Next rowNo
+    If errorCount > 0 Then MsgBox "運転者名警告の" & errorCount & "セルでコメントまたは書式を処理できませんでした。確認してください。", vbExclamation
+    Exit Sub
+MasterMissing:
+    MsgBox "運転者名マスタが未作成です。" & vbCrLf & _
+           "Alt+F8から「運転者名マスタを初期作成」を実行し、内容を確認してください。", vbExclamation
+    Exit Sub
+Failed:
+    MsgBox "運転者氏名チェックを中止しました。" & Err.Description, vbExclamation
+    Err.Clear
+End Sub
+
+Private Function 運転者名警告一覧(ByVal enteredName As String, ByVal masterNames As Collection) As Collection
+    Dim warnings As New Collection, exactFound As Boolean, trimmedName As String, compactName As String
+    Dim masterName As Variant, masterTrimmed As String, compactMaster As String
+    Dim spacingMatches As Object, nearMatches As Object, characterValue As String
+    Dim i As Long, hasHalfSpace As Boolean, hasFullSpace As Boolean, invalidCharacters As String
+
+    trimmedName = 運転者名の前後空白を除去(enteredName)
+    compactName = 運転者名の空白を除去(trimmedName)
+    If enteredName <> trimmedName Then warnings.Add "要確認：運転者氏名の前後に空白があります。"
+    hasHalfSpace = (InStr(1, enteredName, " ", vbBinaryCompare) > 0)
+    hasFullSpace = (InStr(1, enteredName, "　", vbBinaryCompare) > 0)
+    If (hasHalfSpace And hasFullSpace) Or InStr(1, enteredName, "  ", vbBinaryCompare) > 0 Or _
+       InStr(1, enteredName, "　　", vbBinaryCompare) > 0 Or InStr(1, enteredName, " 　", vbBinaryCompare) > 0 Or _
+       InStr(1, enteredName, "　 ", vbBinaryCompare) > 0 Then
+        warnings.Add "要確認：運転者氏名の空白表記を確認してください。"
+    End If
+    invalidCharacters = "0123456789０１２３４５６７８９?？!！/／#＃@＠"
+    For i = 1 To Len(enteredName)
+        characterValue = Mid$(enteredName, i, 1)
+        If InStr(1, invalidCharacters, characterValue, vbBinaryCompare) > 0 Then
+            warnings.Add "要確認：運転者氏名に数字または確認が必要な記号があります。"
+            Exit For
+        End If
+    Next i
+    If Len(compactName) = 1 Then warnings.Add "要確認：運転者氏名が極端に短いです。"
+    If Len(compactName) = 0 Then
+        Set 運転者名警告一覧 = warnings
+        Exit Function
+    End If
+
+    Set spacingMatches = CreateObject("Scripting.Dictionary")
+    Set nearMatches = CreateObject("Scripting.Dictionary")
+    For Each masterName In masterNames
+        masterTrimmed = 運転者名の前後空白を除去(CStr(masterName))
+        compactMaster = 運転者名の空白を除去(masterTrimmed)
+        If trimmedName = masterTrimmed Then exactFound = True
+        If compactName = compactMaster Then spacingMatches(masterTrimmed) = True
+        If 運転者名の編集距離(compactName, compactMaster) = 1 Then nearMatches(masterTrimmed) = True
+    Next masterName
+    If Not exactFound Then
+        If spacingMatches.Count = 1 Then
+            For Each masterName In spacingMatches.Keys
+                warnings.Add "要確認：登録済みの「" & CStr(masterName) & "」と空白表記が異なります。"
+            Next masterName
+        ElseIf spacingMatches.Count > 1 Then
+            warnings.Add "要確認：空白表記が異なる登録済みの複数名が候補です。"
+        ElseIf nearMatches.Count = 1 Then
+            For Each masterName In nearMatches.Keys
+                warnings.Add "要確認：登録済みの「" & CStr(masterName) & "」に近い運転者名です。漢字・入力内容を確認してください。"
+            Next masterName
+        ElseIf nearMatches.Count > 1 Then
+            warnings.Add "要確認：登録済みの複数の運転者名に似ています。"
+        Else
+            warnings.Add "要確認：運転者名マスタにない初登場の名前です。正しい新規運転者であれば、確認後に運転者名マスタへ追加してください。"
+        End If
+    End If
+    Set 運転者名警告一覧 = warnings
+End Function
+
+Private Function 運転者名の前後空白を除去(ByVal sourceName As String) As String
+    Dim firstPosition As Long, lastPosition As Long, currentChar As String
+    firstPosition = 1: lastPosition = Len(sourceName)
+    Do While firstPosition <= lastPosition
+        currentChar = Mid$(sourceName, firstPosition, 1)
+        If currentChar <> " " And currentChar <> "　" Then Exit Do
+        firstPosition = firstPosition + 1
+    Loop
+    Do While lastPosition >= firstPosition
+        currentChar = Mid$(sourceName, lastPosition, 1)
+        If currentChar <> " " And currentChar <> "　" Then Exit Do
+        lastPosition = lastPosition - 1
+    Loop
+    If lastPosition >= firstPosition Then 運転者名の前後空白を除去 = Mid$(sourceName, firstPosition, lastPosition - firstPosition + 1)
+End Function
+
+Private Function 運転者名の空白を除去(ByVal sourceName As String) As String
+    運転者名の空白を除去 = Replace(Replace(sourceName, " ", ""), "　", "")
+End Function
+
+Private Function 運転者名の編集距離(ByVal leftName As String, ByVal rightName As String) As Long
+    Dim distance() As Long, leftLength As Long, rightLength As Long, i As Long, j As Long, cost As Long
+    leftLength = Len(leftName): rightLength = Len(rightName)
+    If Abs(leftLength - rightLength) > 1 Then
+        運転者名の編集距離 = 2
+        Exit Function
+    End If
+    ReDim distance(0 To leftLength, 0 To rightLength)
+    For i = 0 To leftLength
+        distance(i, 0) = i
+    Next i
+    For j = 0 To rightLength
+        distance(0, j) = j
+    Next j
+    For i = 1 To leftLength
+        For j = 1 To rightLength
+            cost = 0
+            If Mid$(leftName, i, 1) <> Mid$(rightName, j, 1) Then cost = 1
+            distance(i, j) = Application.Min(distance(i - 1, j) + 1, distance(i, j - 1) + 1, distance(i - 1, j - 1) + cost)
+        Next j
+    Next i
+    運転者名の編集距離 = distance(leftLength, rightLength)
+End Function
+
 Public Sub 入力内容チェック()
     Call 入力内容チェック実行(True)
+    Call 運転者氏名をチェック
     Call 給油記録を照合実行(False)
     Call 車両候補確認画面を表示
 End Sub
@@ -514,11 +726,19 @@ Private Sub 前回の自動チェック警告を除去(ByVal ws As Worksheet, By
 End Sub
 
 Private Sub セルの自動チェック警告を除去(ByVal target As Range, ByRef errorCount As Long)
-    Dim note As Comment
-    Dim existingText As String, prefixText As String, suffixText As String, newText As String
-    Dim markerStart As Long, headerEnd As Long, markerEnd As Long, metadataStart As Long
-    Dim metadataText As String, metadataParts As Variant
-    Dim originalColor As Long, originalBold As Boolean
+    Call セルの自動チェック警告カテゴリを除去(target, errorCount, "通常チェック")
+End Sub
+
+Private Sub セルの自動チェック警告カテゴリを除去(ByVal target As Range, ByRef errorCount As Long, _
+                                           ByVal category As String)
+    Dim note As Comment, existingText As String, prefixText As String, suffixText As String
+    Dim bodyText As String, retainedBody As String, metadataText As String
+    Dim markerStart As Long, headerEnd As Long, markerEnd As Long, bodyStart As Long
+    Dim cursor As Long, nextStart As Long, endPosition As Long, selectedPosition As Long
+    Dim selectedStart As String, selectedEnd As String, selectedCategory As String
+    Dim startMarkers As Variant, endMarkers As Variant, categoryNames As Variant
+    Dim i As Long, originalColor As Long, originalBold As Boolean
+    Dim markerText As String, rebuiltText As String, hasManagedWarnings As Boolean
 
     On Error GoTo RemoveFailed
     Set note = target.Comment
@@ -527,32 +747,85 @@ Private Sub セルの自動チェック警告を除去(ByVal target As Range, By
     markerStart = InStr(1, existingText, CHECK_WARNING_START, vbBinaryCompare)
     If markerStart = 0 Then Exit Sub
     headerEnd = InStr(markerStart, existingText, "】", vbBinaryCompare)
-    If headerEnd = 0 Then Exit Sub
+    If headerEnd = 0 Then
+        errorCount = errorCount + 1
+        Exit Sub
+    End If
     markerEnd = InStr(headerEnd + 1, existingText, CHECK_WARNING_END, vbBinaryCompare)
-    If markerEnd = 0 Then Exit Sub
+    If markerEnd = 0 Then
+        errorCount = errorCount + 1
+        Exit Sub
+    End If
+    If InStr(markerEnd + Len(CHECK_WARNING_END), existingText, CHECK_WARNING_START, vbBinaryCompare) > 0 Then
+        errorCount = errorCount + 1
+        Exit Sub
+    End If
 
-    metadataStart = markerStart + Len(CHECK_WARNING_START)
-    metadataText = Mid$(existingText, metadataStart, headerEnd - metadataStart)
-    metadataParts = Split(metadataText, "|")
-    If UBound(metadataParts) <> 1 Then Exit Sub
-    If Not IsNumeric(metadataParts(0)) Or Not IsNumeric(metadataParts(1)) Then Exit Sub
-    originalColor = CLng(metadataParts(0))
-    originalBold = (CLng(metadataParts(1)) <> 0)
-
+    metadataText = Mid$(existingText, markerStart + Len(CHECK_WARNING_START), _
+                        headerEnd - (markerStart + Len(CHECK_WARNING_START)))
+    If Not 自動警告書式を取得(metadataText, originalColor, originalBold) Then
+        errorCount = errorCount + 1
+        Exit Sub
+    End If
+    bodyStart = headerEnd + Len("】") + Len(vbCrLf)
+    bodyText = Mid$(existingText, bodyStart, markerEnd - bodyStart)
     prefixText = Left$(existingText, markerStart - 1)
-    If Right$(prefixText, Len(vbCrLf)) = vbCrLf Then
-        prefixText = Left$(prefixText, Len(prefixText) - Len(vbCrLf))
-    End If
     suffixText = Mid$(existingText, markerEnd + Len(CHECK_WARNING_END))
-    newText = prefixText & suffixText
-    If target.Font.Color = vbRed And target.Font.Bold = True Then
-        target.Font.Color = originalColor
-        target.Font.Bold = originalBold
-    End If
-    If Len(Trim$(newText)) = 0 Then
-        note.Delete
+
+    startMarkers = Array("【通常チェック警告開始】", "【運転者名警告開始】", "【給油照合警告開始】")
+    endMarkers = Array("【通常チェック警告終了】", "【運転者名警告終了】", "【給油照合警告終了】")
+    categoryNames = Array("通常チェック", "運転者名警告", "給油照合警告")
+    cursor = 1
+    Do While cursor <= Len(bodyText)
+        nextStart = 0
+        selectedPosition = 0
+        For i = LBound(startMarkers) To UBound(startMarkers)
+            endPosition = InStr(cursor, bodyText, CStr(startMarkers(i)), vbBinaryCompare)
+            If endPosition > 0 And (nextStart = 0 Or endPosition < nextStart) Then
+                nextStart = endPosition
+                selectedPosition = i
+            End If
+        Next i
+        If nextStart = 0 Then
+            If category <> "通常チェック" Then retainedBody = retainedBody & Mid$(bodyText, cursor)
+            Exit Do
+        End If
+        If category <> "通常チェック" And nextStart > cursor Then
+            retainedBody = retainedBody & Mid$(bodyText, cursor, nextStart - cursor)
+        End If
+        selectedStart = CStr(startMarkers(selectedPosition))
+        selectedEnd = CStr(endMarkers(selectedPosition))
+        selectedCategory = CStr(categoryNames(selectedPosition))
+        endPosition = InStr(nextStart + Len(selectedStart), bodyText, selectedEnd, vbBinaryCompare)
+        If endPosition = 0 Then
+            If category <> "通常チェック" Then retainedBody = retainedBody & Mid$(bodyText, nextStart)
+            Exit Do
+        End If
+        If selectedCategory <> category Then
+            retainedBody = retainedBody & Mid$(bodyText, nextStart, endPosition + Len(selectedEnd) - nextStart)
+        End If
+        cursor = endPosition + Len(selectedEnd)
+    Loop
+
+    hasManagedWarnings = (Len(Trim$(retainedBody)) > 0)
+    If hasManagedWarnings Then
+        markerText = Mid$(existingText, markerStart, headerEnd - markerStart + Len("】"))
+        rebuiltText = prefixText & markerText & vbCrLf & retainedBody & vbCrLf & _
+                      CHECK_WARNING_END & suffixText
+        note.Text Text:=rebuiltText
+        target.Font.Color = vbRed
+        target.Font.Bold = True
     Else
-        note.Text Text:=newText
+        rebuiltText = prefixText & suffixText
+        If target.Font.Color = vbRed And target.Font.Bold = True Then
+            target.Font.Color = originalColor
+            target.Font.Bold = originalBold
+        End If
+        If Len(Trim$(rebuiltText)) = 0 Then
+            note.Delete
+        Else
+            note.Text Text:=rebuiltText
+        End If
     End If
     Exit Sub
 RemoveFailed:
@@ -560,13 +833,25 @@ RemoveFailed:
     Err.Clear
 End Sub
 
+Private Function 自動警告書式を取得(ByVal metadataText As String, ByRef originalColor As Long, _
+                                   ByRef originalBold As Boolean) As Boolean
+    Dim parts As Variant
+    parts = Split(metadataText, "|")
+    If UBound(parts) <> 1 Then Exit Function
+    If Not IsNumeric(parts(0)) Or Not IsNumeric(parts(1)) Then Exit Function
+    originalColor = CLng(parts(0))
+    originalBold = (CLng(parts(1)) <> 0)
+    自動警告書式を取得 = True
+End Function
+
 Private Sub 自動チェック警告を追加(ByVal target As Range, ByVal warningText As String, _
-                                ByRef errorCount As Long)
-    Dim note As Comment
-    Dim existingText As String, newText As String, markerText As String, managedText As String
-    Dim markerStart As Long, headerEnd As Long, markerEnd As Long, metadataStart As Long, bodyStart As Long
-    Dim metadataText As String, metadataParts As Variant, existingWarnings As String
+                                ByRef errorCount As Long, Optional ByVal category As String = "通常チェック")
+    Dim note As Comment, existingText As String, newText As String, markerText As String
+    Dim bodyText As String, newBody As String, markerStart As Long, headerEnd As Long, markerEnd As Long
+    Dim bodyStart As Long, metadataText As String, startMarker As String, endMarker As String
     Dim originalColor As Long, originalBold As Boolean, createdComment As Boolean
+    Dim prefixText As String, suffixText As String, currentCategoryText As String
+    Dim categoryStart As Long, categoryEnd As Long, markerHeader As String
 
     On Error GoTo AddFailed
     Set note = target.Comment
@@ -582,43 +867,54 @@ Private Sub 自動チェック警告を追加(ByVal target As Range, ByVal warni
     markerStart = InStr(1, existingText, CHECK_WARNING_START, vbBinaryCompare)
     If markerStart > 0 Then
         headerEnd = InStr(markerStart, existingText, "】", vbBinaryCompare)
-        If headerEnd > 0 Then
-            markerEnd = InStr(headerEnd + 1, existingText, CHECK_WARNING_END, vbBinaryCompare)
-            If markerEnd > 0 Then
-                metadataStart = markerStart + Len(CHECK_WARNING_START)
-                metadataText = Mid$(existingText, metadataStart, headerEnd - metadataStart)
-                metadataParts = Split(metadataText, "|")
-                If UBound(metadataParts) = 1 Then
-                    If IsNumeric(metadataParts(0)) And IsNumeric(metadataParts(1)) Then
-                        bodyStart = headerEnd + Len("】") + Len(vbCrLf)
-                        existingWarnings = Mid$(existingText, bodyStart, markerEnd - bodyStart)
-                        If InStr(1, existingWarnings, warningText, vbBinaryCompare) = 0 Then
-                            markerText = Mid$(existingText, markerStart, headerEnd - markerStart + Len("】"))
-                            managedText = markerText & vbCrLf & existingWarnings & vbCrLf & warningText & _
-                                          vbCrLf & CHECK_WARNING_END
-                            newText = Left$(existingText, markerStart - 1) & managedText & _
-                                      Mid$(existingText, markerEnd + Len(CHECK_WARNING_END))
-                            note.Text Text:=newText
-                        End If
-                        target.Font.Color = vbRed
-                        target.Font.Bold = True
-                        Exit Sub
-                    End If
-                End If
-            End If
-        End If
+        If headerEnd = 0 Then GoTo AddFailed
+        markerEnd = InStr(headerEnd + 1, existingText, CHECK_WARNING_END, vbBinaryCompare)
+        If markerEnd = 0 Then GoTo AddFailed
+        If InStr(markerEnd + Len(CHECK_WARNING_END), existingText, CHECK_WARNING_START, vbBinaryCompare) > 0 Then GoTo AddFailed
+        metadataText = Mid$(existingText, markerStart + Len(CHECK_WARNING_START), _
+                            headerEnd - (markerStart + Len(CHECK_WARNING_START)))
+        If Not 自動警告書式を取得(metadataText, originalColor, originalBold) Then GoTo AddFailed
+        bodyStart = headerEnd + Len("】") + Len(vbCrLf)
+        bodyText = Mid$(existingText, bodyStart, markerEnd - bodyStart)
+        prefixText = Left$(existingText, markerStart - 1)
+        suffixText = Mid$(existingText, markerEnd + Len(CHECK_WARNING_END))
+        markerHeader = Mid$(existingText, markerStart, headerEnd - markerStart + Len("】"))
+    Else
+        prefixText = existingText
+        suffixText = ""
+        bodyText = ""
+        originalColor = CLng(target.Font.Color)
+        originalBold = CBool(target.Font.Bold)
+        markerHeader = CHECK_WARNING_START & CStr(originalColor) & "|" & _
+                       CStr(Abs(CLng(originalBold))) & "】"
     End If
 
-    originalColor = CLng(target.Font.Color)
-    originalBold = CBool(target.Font.Bold)
-    markerText = CHECK_WARNING_START & CStr(originalColor) & "|" & _
-                 CStr(Abs(CLng(originalBold))) & "】"
-    managedText = markerText & vbCrLf & warningText & vbCrLf & CHECK_WARNING_END
-    If Len(existingText) > 0 Then
-        newText = existingText & vbCrLf & managedText
+    startMarker = 自動警告カテゴリ開始(category)
+    endMarker = 自動警告カテゴリ終了(category)
+    If Len(startMarker) = 0 Or Len(endMarker) = 0 Then GoTo AddFailed
+    categoryStart = InStr(1, bodyText, startMarker, vbBinaryCompare)
+    If categoryStart > 0 Then
+        categoryEnd = InStr(categoryStart + Len(startMarker), bodyText, endMarker, vbBinaryCompare)
     Else
-        newText = managedText
+        categoryEnd = 0
     End If
+    If categoryStart > 0 And categoryEnd > 0 Then
+        currentCategoryText = Mid$(bodyText, categoryStart + Len(startMarker), _
+                                  categoryEnd - categoryStart - Len(startMarker))
+        If InStr(1, currentCategoryText, warningText, vbBinaryCompare) = 0 Then
+            If Len(currentCategoryText) > 0 Then currentCategoryText = currentCategoryText & vbCrLf
+            currentCategoryText = currentCategoryText & warningText
+        End If
+        newBody = Left$(bodyText, categoryStart - 1) & startMarker & currentCategoryText & endMarker & _
+                  Mid$(bodyText, categoryEnd + Len(endMarker))
+    Else
+        If Len(bodyText) > 0 Then bodyText = bodyText & vbCrLf
+        newBody = bodyText & startMarker & warningText & endMarker
+    End If
+
+    markerText = markerHeader & vbCrLf & newBody & vbCrLf & CHECK_WARNING_END
+    If Len(prefixText) > 0 And Right$(prefixText, Len(vbCrLf)) <> vbCrLf Then prefixText = prefixText & vbCrLf
+    newText = prefixText & markerText & suffixText
     note.Text Text:=newText
     target.Font.Color = vbRed
     target.Font.Bold = True
@@ -632,6 +928,22 @@ AddFailed:
     errorCount = errorCount + 1
     Err.Clear
 End Sub
+
+Private Function 自動警告カテゴリ開始(ByVal category As String) As String
+    Select Case category
+        Case "通常チェック": 自動警告カテゴリ開始 = "【通常チェック警告開始】"
+        Case "運転者名警告": 自動警告カテゴリ開始 = "【運転者名警告開始】"
+        Case "給油照合警告": 自動警告カテゴリ開始 = "【給油照合警告開始】"
+    End Select
+End Function
+
+Private Function 自動警告カテゴリ終了(ByVal category As String) As String
+    Select Case category
+        Case "通常チェック": 自動警告カテゴリ終了 = "【通常チェック警告終了】"
+        Case "運転者名警告": 自動警告カテゴリ終了 = "【運転者名警告終了】"
+        Case "給油照合警告": 自動警告カテゴリ終了 = "【給油照合警告終了】"
+    End Select
+End Function
 
 Private Sub 車両選択候補をチェック(ByVal ws As Worksheet, ByVal lastRow As Long, _
                                  ByRef errorCount As Long, Optional ByVal 警告を追加 As Boolean = True)
@@ -964,6 +1276,7 @@ Private Function 給油記録を照合実行(ByVal 結果表示 As Boolean) As B
     SetRemainingStatuses tickets, logs, statuses, usedTickets, usedLogs, matches, reservedSameDayTickets, reservedSameDayLogs
     If Not ResetManagedTicketOutput(ticketWS) Then Exit Function
     WriteTicketResults ticketWS, tickets, statuses, matches
+    Call 給油警告を記録シートへ反映(ticketWS, logWS, gasCol)
 
     If 結果表示 Then MsgBox "給油記録の照合が完了しました。", vbInformation
     給油記録を照合実行 = True
@@ -971,6 +1284,136 @@ Private Function 給油記録を照合実行(ByVal 結果表示 As Boolean) As B
 Failed:
     MsgBox "給油照合を中止しました。" & Err.Description, vbExclamation
 End Function
+
+Private Sub 給油警告を記録シートへ反映(ByVal ticketWS As Worksheet, ByVal logWS As Worksheet, ByVal gasCol As Long)
+    Dim lastTicketRow As Long, lastLogRow As Long, rowNo As Long, ticketRow As Long
+    Dim ticketDate As Double, ticketAmount As Double, car As String
+    Dim statusText As String, answer As String, warningText As String, dateText As String
+    Dim rowsToWarn As Collection, ticketItem As Variant, logItem As Variant, candidateLog As Variant
+    Dim tickets As Collection, logs As Collection, ticketStatus As Object
+    Dim usedAnswers As Object, reservedAnswers As Object
+    Dim noteFailures As Long, unlocatedCount As Long, exactCandidateCount As Long
+
+    On Error GoTo Failed
+    lastLogRow = Application.Max(logWS.Cells(logWS.Rows.Count, "A").End(xlUp).Row, _
+                                 logWS.Cells(logWS.Rows.Count, "J").End(xlUp).Row, _
+                                 logWS.Cells(logWS.Rows.Count, "K").End(xlUp).Row, _
+                                 logWS.Cells(logWS.Rows.Count, gasCol).End(xlUp).Row)
+    Call セルの自動チェック警告カテゴリを除去(logWS.Cells(1, gasCol), noteFailures, "給油照合警告")
+    For rowNo = 2 To lastLogRow
+        Call セルの自動チェック警告カテゴリを除去(logWS.Cells(rowNo, gasCol), noteFailures, "給油照合警告")
+    Next rowNo
+
+    Set ticketStatus = CreateObject("Scripting.Dictionary")
+    Set tickets = ReadTickets(ticketWS, ticketStatus)
+    Set logs = ReadLogs(logWS, gasCol)
+    Set usedAnswers = CreateObject("Scripting.Dictionary")
+    Set reservedAnswers = CreateObject("Scripting.Dictionary")
+    lastTicketRow = LastTicketInputRow(ticketWS)
+    For ticketRow = 2 To lastTicketRow
+        If Not IsError(ticketWS.Cells(ticketRow, "D").Value) Then
+            statusText = Trim$(CStr(ticketWS.Cells(ticketRow, "D").Value))
+            If (statusText = "同日一致" Or statusText = "後日一致") And Not IsError(ticketWS.Cells(ticketRow, "F").Value) Then
+                answer = Trim$(CStr(ticketWS.Cells(ticketRow, "F").Value))
+                If Len(answer) > 0 Then usedAnswers(answer) = True
+            End If
+        End If
+    Next ticketRow
+    For Each ticketItem In tickets
+        If Trim$(CStr(ticketWS.Cells(CLng(ticketItem(0)), "D").Value)) = "候補複数・要確認" Then
+            For Each logItem In logs
+                If IsCandidate(ticketItem, logItem, True) Then
+                    If Not usedAnswers.Exists(CStr(logItem(0))) Then reservedAnswers(CStr(logItem(0))) = True
+                End If
+            Next logItem
+        End If
+    Next ticketItem
+
+    For ticketRow = 2 To lastTicketRow
+        If Not IsError(ticketWS.Cells(ticketRow, "D").Value) Then
+            statusText = Trim$(CStr(ticketWS.Cells(ticketRow, "D").Value))
+            If statusText = "未照合" Then
+                If Not IsError(ticketWS.Cells(ticketRow, "A").Value) And Not IsError(ticketWS.Cells(ticketRow, "B").Value) And _
+                   Not IsError(ticketWS.Cells(ticketRow, "C").Value) Then
+                    If IsDate(ticketWS.Cells(ticketRow, "A").Value) And _
+                       PositiveAmount(ticketWS.Cells(ticketRow, "C").Value, ticketAmount) Then
+                        car = Trim$(CStr(ticketWS.Cells(ticketRow, "B").Value))
+                        ticketDate = Fix(CDbl(CDate(ticketWS.Cells(ticketRow, "A").Value)))
+                        Set rowsToWarn = New Collection
+                        For rowNo = 2 To lastLogRow
+                            If Not IsError(logWS.Cells(rowNo, "J").Value) And Not IsError(logWS.Cells(rowNo, "K").Value) Then
+                                If Trim$(CStr(logWS.Cells(rowNo, "J").Value)) = car And IsDate(logWS.Cells(rowNo, "K").Value) Then
+                                    If Fix(CDbl(CDate(logWS.Cells(rowNo, "K").Value))) = ticketDate Then rowsToWarn.Add rowNo
+                                End If
+                            End If
+                        Next rowNo
+                        If rowsToWarn.Count = 0 Then
+                            unlocatedCount = unlocatedCount + 1
+                        Else
+                            dateText = Format$(CDate(ticketDate), "m月d日")
+                            If rowsToWarn.Count = 1 Then
+                                warningText = "要確認：給油記録に" & vbCrLf & dateText & "・" & car & "号車・" & _
+                                              Format$(ticketAmount, "0.##") & "Lのチケットがありますが、" & vbCrLf & _
+                                              "対応する給油入力が確認できません。" & vbCrLf & vbCrLf & _
+                                              "チケット発行日と実際の給油日が異なる可能性も含めて確認してください。"
+                            Else
+                                warningText = "この日の給油チケットが未照合です。どの運転記録に対応するか確認してください。"
+                            End If
+                            For Each ticketItem In rowsToWarn
+                                Call 自動チェック警告を追加(logWS.Cells(CLng(ticketItem), gasCol), warningText, noteFailures, "給油照合警告")
+                            Next ticketItem
+                        End If
+                    End If
+                End If
+            ElseIf statusText = "候補複数・要確認" Then
+                For Each ticketItem In tickets
+                    If CStr(ticketItem(0)) = CStr(ticketRow) Then
+                        Set rowsToWarn = New Collection
+                        exactCandidateCount = 0
+                        ticketDate = Fix(CDbl(CDate(ticketItem(1))))
+                        For Each logItem In logs
+                            If IsCandidate(ticketItem, logItem, True) And Not usedAnswers.Exists(CStr(logItem(0))) Then
+                                rowsToWarn.Add logItem
+                                exactCandidateCount = exactCandidateCount + 1
+                            End If
+                        Next logItem
+                        If exactCandidateCount = 0 Then
+                            For Each logItem In logs
+                                If IsCandidate(ticketItem, logItem, False) And Not usedAnswers.Exists(CStr(logItem(0))) And _
+                                   Not reservedAnswers.Exists(CStr(logItem(0))) Then rowsToWarn.Add logItem
+                            Next logItem
+                        End If
+                        warningText = "要確認：この給油記録には複数の照合候補があります。" & vbCrLf & _
+                                      "自動確定していません。給油記録シートを確認してください。"
+                        For Each candidateLog In rowsToWarn
+                            answer = CStr(candidateLog(0))
+                            For rowNo = 2 To lastLogRow
+                                If Not IsError(logWS.Cells(rowNo, "A").Value) Then
+                                    If Trim$(CStr(logWS.Cells(rowNo, "A").Value)) = answer Then
+                                        Call 自動チェック警告を追加(logWS.Cells(rowNo, gasCol), warningText, noteFailures, "給油照合警告")
+                                        Exit For
+                                    End If
+                                End If
+                            Next rowNo
+                        Next candidateLog
+                        Exit For
+                    End If
+                Next ticketItem
+            End If
+        End If
+    Next ticketRow
+
+    If unlocatedCount > 0 Then
+        warningText = "要確認：給油記録シートに、記録シート上で対応先を特定できない未照合チケットが" & _
+                      CStr(unlocatedCount) & "件あります。詳細は給油記録シートD:Gを確認してください。"
+        Call 自動チェック警告を追加(logWS.Cells(1, gasCol), warningText, noteFailures, "給油照合警告")
+    End If
+    If noteFailures > 0 Then MsgBox "給油照合警告の" & noteFailures & "セルでコメントまたは書式を処理できませんでした。確認してください。", vbExclamation
+    Exit Sub
+Failed:
+    MsgBox "記録シートへの給油警告反映を中止しました。" & Err.Description, vbExclamation
+    Err.Clear
+End Sub
 
 Private Function PrepareTicketOutput(ws As Worksheet) As Boolean
     Dim r As Long, lastRow As Long, activeRow As Boolean, hasOutput As Boolean
