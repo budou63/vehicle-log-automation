@@ -6,6 +6,10 @@ Private Const GASOLINE_FUEL_HEADER As String = "ガソリン給油の有無 [給
 Private Const CHECK_WARNING_START As String = "【自動入力チェック開始|"
 Private Const CHECK_WARNING_END As String = "【自動入力チェック終了】"
 
+Private vehicleReviewCandidates As Collection
+Private vehicleReviewIsOpen As Boolean
+Private vehicleReviewHasChanges As Boolean
+
 Sub 運行記録メニューを開く()
     UserForm1.Show vbModeless  ' モードレス表示
 End Sub
@@ -217,6 +221,7 @@ AddFailed:
 End Function
 Public Sub 入力内容チェック()
     Call 入力内容チェック実行(True)
+    Call 車両候補確認画面を表示
 End Sub
 
 Private Function 入力内容チェック実行(ByVal 結果表示 As Boolean) As Long
@@ -227,6 +232,7 @@ Private Function 入力内容チェック実行(ByVal 結果表示 As Boolean) A
     Dim warningText As String, commentFailures As Long
 
     Set ws = ThisWorkbook.Sheets("記録")
+    Set vehicleReviewCandidates = New Collection
     lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
     If lastRow < 2 Then
         If 結果表示 Then MsgBox "確認対象の記録がありません。", vbInformation
@@ -626,7 +632,7 @@ AddFailed:
 End Sub
 
 Private Sub 車両選択候補をチェック(ByVal ws As Worksheet, ByVal lastRow As Long, _
-                                 ByRef errorCount As Long)
+                                 ByRef errorCount As Long, Optional ByVal 警告を追加 As Boolean = True)
     Dim vehicleNames() As String, rowVehicleIndex() As Long
     Dim rowStartDateTime() As Double, rowEndDateTime() As Double, rowTimesValid() As Boolean
     Dim rowEndMeterValid() As Boolean, rowEndMeter() As Double
@@ -637,8 +643,10 @@ Private Sub 車両選択候補をチェック(ByVal ws As Worksheet, ByVal lastR
     Dim vehicleCount As Long, rowNo As Long, otherRow As Long, vehicleIndex As Long, assignedIndex As Long
     Dim currentVehicle As String, vehicleValue As Variant, currentStart As Double, currentEnd As Double
     Dim assignedMismatch As Boolean, candidateCount As Long, candidateIndex As Long, warningText As String
+    Dim candidateInfo As Object
 
     If lastRow < 3 Then Exit Sub
+    Set vehicleReviewCandidates = New Collection
     ReDim vehicleNames(1 To lastRow - 1)
     ReDim rowVehicleIndex(1 To lastRow)
     ReDim rowStartDateTime(1 To lastRow)
@@ -739,7 +747,20 @@ Private Sub 車両選択候補をチェック(ByVal ws As Worksheet, ByVal lastR
         Next vehicleIndex
 
         If candidateCount = 1 Then
-            warningText = "要確認：車両選択間違いの可能性があります。" & vbCrLf & vbCrLf & _
+            Set candidateInfo = CreateObject("Scripting.Dictionary")
+            candidateInfo.Add "回答番号", セル値を表示(ws.Cells(rowNo, "A").Value)
+            candidateInfo.Add "登録車両", vehicleNames(assignedIndex)
+            candidateInfo.Add "候補車両", vehicleNames(candidateIndex)
+            candidateInfo.Add "運転日", Format$(Fix(rowStartDateTime(rowNo)), "yyyy/m/d")
+            candidateInfo.Add "使用時間", Format$(rowStartDateTime(rowNo), "hh:mm") & "～" & Format$(rowEndDateTime(rowNo), "hh:mm")
+            candidateInfo.Add "運転者", セル値を表示(ws.Cells(rowNo, "W").Value)
+            candidateInfo.Add "行先", セル値を表示(ws.Cells(rowNo, "R").Value)
+            candidateInfo.Add "用務", セル値を表示(ws.Cells(rowNo, "T").Value)
+            candidateInfo.Add "登録推移", Format$(previousMeter(assignedIndex), "0.##") & " → " & Format$(rowEndMeter(rowNo), "0.##") & " → " & Format$(nextMeter(assignedIndex), "0.##")
+            candidateInfo.Add "候補推移", Format$(previousMeter(candidateIndex), "0.##") & " → " & Format$(rowEndMeter(rowNo), "0.##") & " → " & Format$(nextMeter(candidateIndex), "0.##")
+            vehicleReviewCandidates.Add candidateInfo
+            If 警告を追加 Then
+                warningText = "要確認：車両選択間違いの可能性があります。" & vbCrLf & vbCrLf & _
                           "回答番号：" & セル値を表示(ws.Cells(rowNo, "A").Value) & vbCrLf & _
                           "運転日：" & Format$(Fix(rowStartDateTime(rowNo)), "yyyy/m/d") & vbCrLf & _
                           "使用時間：" & Format$(rowStartDateTime(rowNo), "hh:mm") & "～" & Format$(rowEndDateTime(rowNo), "hh:mm") & vbCrLf & _
@@ -756,9 +777,88 @@ Private Sub 車両選択候補をチェック(ByVal ws As Worksheet, ByVal lastR
                           vehicleNames(candidateIndex) & "号車として扱う方がメーター推移と時間関係が自然です。" & vbCrLf & _
                           "実際に使用した車両を確認してください。"
             Call 自動チェック警告を追加(ws.Cells(rowNo, "J"), warningText, errorCount)
+            End If
         End If
 NextVehicleRecord:
     Next rowNo
+End Sub
+
+Public Function 車両候補確認一覧を取得() As Collection
+    If vehicleReviewCandidates Is Nothing Then Set vehicleReviewCandidates = New Collection
+    Set 車両候補確認一覧を取得 = vehicleReviewCandidates
+End Function
+
+Private Sub 車両候補確認画面を表示()
+    Dim reviewForm As Object
+    If vehicleReviewIsOpen Then Exit Sub
+    If vehicleReviewCandidates Is Nothing Then Exit Sub
+    If vehicleReviewCandidates.Count = 0 Then Exit Sub
+    On Error GoTo FormUnavailable
+    Set reviewForm = VBA.UserForms.Add("frmVehicleReview")
+    vehicleReviewIsOpen = True
+    reviewForm.候補を読み込む vehicleReviewCandidates
+    reviewForm.Show vbModeless
+    Exit Sub
+FormUnavailable:
+    vehicleReviewIsOpen = False
+    MsgBox "車両候補確認フォーム（frmVehicleReview）が読み込めません。" & vbCrLf & _
+           "通常の内容チェックは完了しています。職場Excelへフォームをインポートしてから再実行してください。", vbExclamation
+    Err.Clear
+End Sub
+
+Public Sub 車両候補の対象行へ移動(ByVal answerNumber As String)
+    Dim ws As Worksheet, rowNo As Long, foundRow As Long, matches As Long
+    Set ws = ThisWorkbook.Sheets("記録")
+    For rowNo = 2 To ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+        If セル値を表示(ws.Cells(rowNo, "A").Value) = answerNumber Then matches = matches + 1: foundRow = rowNo
+    Next rowNo
+    If matches = 1 Then
+        ws.Activate
+        ws.Cells(foundRow, "J").Select
+    Else
+        MsgBox "回答番号 " & answerNumber & " を一意に特定できません。再チェックしてください。", vbExclamation
+    End If
+End Sub
+
+Private Sub 最新の車両候補を再判定()
+    Dim ws As Worksheet, lastRow As Long, ignoredErrors As Long
+    Set ws = ThisWorkbook.Sheets("記録")
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    Set vehicleReviewCandidates = New Collection
+    If lastRow >= 3 Then Call 車両選択候補をチェック(ws, lastRow, ignoredErrors, False)
+End Sub
+
+Public Function 車両候補を承認して修正(ByVal answerNumber As String, ByVal expectedVehicle As String, _
+                                      ByVal expectedCandidate As String) As Boolean
+    Dim ws As Worksheet, rowNo As Long, foundRow As Long, matches As Long, item As Object, currentCandidate As Object
+    Set ws = ThisWorkbook.Sheets("記録")
+    Call 最新の車両候補を再判定
+    For Each item In vehicleReviewCandidates
+        If CStr(item("回答番号")) = answerNumber And CStr(item("登録車両")) = expectedVehicle And _
+           CStr(item("候補車両")) = expectedCandidate Then Set currentCandidate = item: Exit For
+    Next item
+    If currentCandidate Is Nothing Then
+        MsgBox "対象記録の条件が変わったため修正しませんでした。内容チェックをやり直してください。", vbExclamation
+        Exit Function
+    End If
+    For rowNo = 2 To ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+        If セル値を表示(ws.Cells(rowNo, "A").Value) = answerNumber Then matches = matches + 1: foundRow = rowNo
+    Next rowNo
+    If matches <> 1 Or Trim$(CStr(ws.Cells(foundRow, "J").Value)) <> expectedVehicle Then
+        MsgBox "回答番号または現在の車両番号を一意に確認できないため修正しませんでした。", vbExclamation
+        Exit Function
+    End If
+    ws.Cells(foundRow, "J").Value = expectedCandidate
+    vehicleReviewHasChanges = True
+    車両候補を承認して修正 = True
+End Function
+
+Public Sub 車両候補確認を終了()
+    vehicleReviewIsOpen = False
+    If vehicleReviewHasChanges Then
+        vehicleReviewHasChanges = False
+        Call 記録シート整理を実行(False)
+    End If
 End Sub
 
 Private Sub 車両選択候補の事前チェック(ByVal ws As Worksheet, ByVal lastRow As Long)
@@ -774,6 +874,10 @@ Private Sub 車両選択候補の事前チェック(ByVal ws As Worksheet, ByVal
 End Sub
 
 Sub 記録シート整理()
+    Call 記録シート整理を実行(True)
+End Sub
+
+Private Sub 記録シート整理を実行(ByVal 結果表示 As Boolean)
     Dim ws As Worksheet
     Set ws = ThisWorkbook.Sheets("記録")
 
@@ -819,7 +923,7 @@ Sub 記録シート整理()
 
     Call 入力内容チェック実行(False)
 
-    MsgBox "並び替えと始業時メーターの補完が完了しました。", vbInformation
+    If 結果表示 Then MsgBox "並び替えと始業時メーターの補完が完了しました。", vbInformation
 End Sub
 Sub 転記to印刷様式()
     Dim wsSrc As Worksheet, wsDest As Worksheet

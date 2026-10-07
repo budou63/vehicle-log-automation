@@ -145,7 +145,7 @@ class VehicleSelectionMismatchTests(unittest.TestCase):
 
     def test_record_sheet_organize_checks_candidates_before_p_is_filled(self):
         source = MODULE.read_text(encoding="utf-8")
-        organize = re.search(r"Sub 記録シート整理\(\).*?^End Sub", source, re.MULTILINE | re.DOTALL)
+        organize = re.search(r"Private Sub 記録シート整理を実行.*?^End Sub", source, re.MULTILINE | re.DOTALL)
         self.assertIsNotNone(organize)
         body = organize.group(0)
         self.assertLess(body.index("車両選択候補の事前チェック"), body.index('Cells(i, "P").Value'))
