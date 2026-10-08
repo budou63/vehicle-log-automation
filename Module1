@@ -2331,7 +2331,7 @@ Sub 転記to印刷様式()
                         Set halfFuelShape = .Shapes.AddShape( _
                             msoShapeRectangle, _
                             燃料残量表示開始位置(fuelCell), _
-                            fuelCell.Top + (fuelCell.Height - fuelCell.Font.Size) / 2, _
+                            fuelCell.MergeArea.Top + (fuelCell.MergeArea.Height - fuelCell.Font.Size) / 2, _
                             fuelCell.Font.Size / 2, _
                             fuelCell.Font.Size)
                         With halfFuelShape
@@ -2363,18 +2363,24 @@ Sub 転記to印刷様式()
 End Sub
 
 Private Function 燃料残量表示開始位置(ByVal targetCell As Range) As Double
-    Dim existingShape As Shape
-    For Each existingShape In targetCell.Worksheet.Shapes
-        If existingShape.Type = msoGroup Then
-            If existingShape.TopLeftCell.Row = targetCell.Row And _
-               existingShape.TopLeftCell.Column = targetCell.Column Then
-                燃料残量表示開始位置 = existingShape.Left
-                Exit Function
-            End If
-        End If
-    Next existingShape
+    Dim fuelDisplayArea As Range
+    Dim glyphSize As Double
+    Dim alignment As Variant
+    Set fuelDisplayArea = targetCell.MergeArea
+    glyphSize = targetCell.Font.Size
+    alignment = targetCell.HorizontalAlignment
+    If IsNull(alignment) Then alignment = xlHAlignLeft
 
-    燃料残量表示開始位置 = targetCell.Left + targetCell.IndentLevel * targetCell.Font.Size
+    Select Case alignment
+        Case xlHAlignCenter
+            燃料残量表示開始位置 = fuelDisplayArea.Left + (fuelDisplayArea.Width - glyphSize) / 2
+        Case xlHAlignRight
+            燃料残量表示開始位置 = fuelDisplayArea.Left + fuelDisplayArea.Width - glyphSize - _
+                                      targetCell.IndentLevel * glyphSize
+        Case Else
+            ' Text/General and left alignment: anchor at this report's own fuel cell.
+            燃料残量表示開始位置 = fuelDisplayArea.Left + targetCell.IndentLevel * glyphSize
+    End Select
 End Function
 
 Sub 転記_確認者チェック(wsSrc As Worksheet, wsDest As Worksheet, rowSrc As Long, baseRow As Long, _
