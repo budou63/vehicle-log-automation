@@ -1788,6 +1788,8 @@ Sub 転記to印刷様式()
     Dim i As Long, destTopRow As Long
     Dim fuelShapeIndex As Long
     Dim fuelCell As Range, halfFuelShape As Shape
+    Dim fuelGaugeShape As Shape
+    Dim fuelShapeLeft As Double, fuelShapeTop As Double
     Dim rowCount As Integer: rowCount = 0
 
     carNo = wsDest.Range("N2").Value
@@ -1837,10 +1839,18 @@ Sub 転記to印刷様式()
                     Set fuelCell = .Range("L" & (destTopRow + 3))
                     If fuelLevel = 1 Then
                         fuelCell.ClearContents
+                        Set fuelGaugeShape = 燃料残量表示グループ(fuelCell)
+                        If fuelGaugeShape Is Nothing Then
+                            fuelShapeLeft = fuelCell.Left + fuelCell.IndentLevel * fuelCell.Font.Size
+                            fuelShapeTop = fuelCell.Top + (fuelCell.Height - fuelCell.Font.Size) / 2
+                        Else
+                            fuelShapeLeft = fuelGaugeShape.Left
+                            fuelShapeTop = fuelGaugeShape.Top
+                        End If
                         Set halfFuelShape = .Shapes.AddShape( _
                             msoShapeRectangle, _
-                            燃料残量表示開始位置(fuelCell), _
-                            fuelCell.Top + (fuelCell.Height - fuelCell.Font.Size) / 2, _
+                            fuelShapeLeft, _
+                            fuelShapeTop, _
                             fuelCell.Font.Size / 2, _
                             fuelCell.Font.Size)
                         With halfFuelShape
@@ -1876,19 +1886,17 @@ Sub 転記to印刷様式()
     MsgBox rowCount & " 件のデータを印刷様式に転記しました。", vbInformation
 End Sub
 
-Private Function 燃料残量表示開始位置(ByVal targetCell As Range) As Double
+Private Function 燃料残量表示グループ(ByVal targetCell As Range) As Shape
     Dim existingShape As Shape
     For Each existingShape In targetCell.Worksheet.Shapes
         If existingShape.Type = msoGroup Then
             If existingShape.TopLeftCell.Row = targetCell.Row And _
                existingShape.TopLeftCell.Column = targetCell.Column Then
-                燃料残量表示開始位置 = existingShape.Left
+                Set 燃料残量表示グループ = existingShape
                 Exit Function
             End If
         End If
     Next existingShape
-
-    燃料残量表示開始位置 = targetCell.Left + targetCell.IndentLevel * targetCell.Font.Size
 End Function
 
 Sub 転記_確認者チェック(wsSrc As Worksheet, wsDest As Worksheet, rowSrc As Long, baseRow As Long, _
