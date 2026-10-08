@@ -1,0 +1,106 @@
+Option Explicit
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+    Dim checkColumn As Long, answerColumn As Long
+    Dim reasonText As String, firstWarningCell As Range
+    Dim previousEvents As Boolean, eventsCaptured As Boolean
+
+    On Error GoTo SelectionFailed
+    previousEvents = Application.EnableEvents
+    eventsCaptured = True
+    If Not previousEvents Then Exit Sub
+    If Target.CountLarge <> 1 Then GoTo RestoreAndExit
+    checkColumn = 記録列番号(Me, "チェック")
+    answerColumn = 記録列番号(Me, "回答番号")
+    If checkColumn = 0 Or answerColumn = 0 Or Target.Column <> checkColumn Or Target.Row < 2 Then GoTo RestoreAndExit
+
+    Application.EnableEvents = False
+    If 記録行は確認済み(Me, Target.Row) Then
+        Target.ClearContents
+        Me.Cells(Target.Row, answerColumn).Select
+        GoTo RestoreAndExit
+    End If
+
+    If IsError(Target.Value) Then
+        MsgBox "チェック欄の値が不正です。セルをクリックして操作してください。", vbExclamation
+        Me.Cells(Target.Row, answerColumn).Select
+        GoTo RestoreAndExit
+    ElseIf Not IsEmpty(Target.Value) Then
+        If Len(CStr(Target.Value)) > 0 Then
+            MsgBox "チェック欄の値が不正です。セルをクリックして操作してください。", vbExclamation
+            Me.Cells(Target.Row, answerColumn).Select
+            GoTo RestoreAndExit
+        End If
+    End If
+
+    If Not 記録行に回答番号あり(Me, Target.Row) Then GoTo RestoreAndExit
+    If Not 記録行は確認可能(Me, Target.Row, reasonText, firstWarningCell) Then
+        MsgBox reasonText, vbExclamation
+        If Not firstWarningCell Is Nothing Then
+            firstWarningCell.Select
+        Else
+            Me.Cells(Target.Row, answerColumn).Select
+        End If
+        GoTo RestoreAndExit
+    End If
+
+    Target.Value = 確認チェックマーク()
+    Target.HorizontalAlignment = xlCenter
+    Me.Cells(Target.Row, answerColumn).Select
+
+RestoreAndExit:
+    If eventsCaptured Then Application.EnableEvents = previousEvents
+    Exit Sub
+SelectionFailed:
+    If eventsCaptured Then Application.EnableEvents = previousEvents
+    MsgBox "チェック欄を更新できませんでした。" & Err.Description, vbExclamation
+    Err.Clear
+End Sub
+
+Private Sub Worksheet_Change(ByVal Target As Range)
+    Dim checkColumn As Long, answerColumn As Long, lastColumn As Long
+    Dim checkCells As Range, editableArea As Range, changedCell As Range
+    Dim previousEvents As Boolean, protectedEdit As Boolean, eventsCaptured As Boolean
+
+    On Error GoTo ChangeFailed
+    previousEvents = Application.EnableEvents
+    eventsCaptured = True
+    If Not previousEvents Then Exit Sub
+
+    checkColumn = 記録列番号(Me, "チェック")
+    answerColumn = 記録列番号(Me, "回答番号")
+    lastColumn = 記録最終列(Me)
+    If checkColumn = 0 Or answerColumn = 0 Or lastColumn < answerColumn Then GoTo RestoreAndExit
+
+    Set checkCells = Application.Intersect(Target, Me.Columns(checkColumn))
+    If Not checkCells Is Nothing Then protectedEdit = True
+
+    Set editableArea = Me.Range(Me.Cells(2, 2), Me.Cells(Me.Rows.Count, lastColumn))
+    Set checkCells = Application.Intersect(Target, editableArea)
+    If Not checkCells Is Nothing Then
+        For Each changedCell In checkCells.Cells
+            If 記録行は確認済み(Me, changedCell.Row) Then
+                protectedEdit = True
+                Exit For
+            End If
+        Next changedCell
+    End If
+
+    If protectedEdit Then
+        Application.EnableEvents = False
+        Application.Undo
+        Application.EnableEvents = previousEvents
+        MsgBox "確認済みの記録です。" & vbCrLf & _
+               "修正する場合は先にA列のチェックを外してください。" & vbCrLf & _
+               "複数セル貼り付けの場合は貼り付け全体を取り消しました。", vbExclamation
+    End If
+RestoreAndExit:
+    If eventsCaptured Then Application.EnableEvents = previousEvents
+    Exit Sub
+
+ChangeFailed:
+    If eventsCaptured Then Application.EnableEvents = previousEvents
+    MsgBox "確認済み記録への変更を自動で取り消せませんでした。保存せず、直ちにCtrl+Zで元に戻してください。" & _
+           vbCrLf & Err.Description, vbCritical
+    Err.Clear
+End Sub

@@ -40,7 +40,8 @@ class VehicleReviewTests(unittest.TestCase):
         self.assertIsNotNone(approval)
         self.assertIn("最新の車両候補を再判定", approval.group(0))
         self.assertNotIn("入力内容チェック実行", approval.group(0))
-        self.assertIn('Cells(foundRow, "J").Value', approval.group(0))
+        self.assertIn('vehicleColumn = 記録列番号(ws, "車両番号")', approval.group(0))
+        self.assertIn("ws.Cells(foundRow, vehicleColumn).Value", approval.group(0))
         self.assertIn("記録シート整理を実行", source)
 
     def test_modeless_form_has_required_buttons_and_safe_close(self):

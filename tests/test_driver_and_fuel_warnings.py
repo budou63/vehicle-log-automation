@@ -232,7 +232,7 @@ class FuelWarningLogicTests(unittest.TestCase):
         self.assertIn('CStr(unlocatedCount) & "件あります。詳細は給油記録シートD:Gを確認してください。"', MODULE_SOURCE)
 
     def test_header_warning_only_changes_comment_not_header_value(self):
-        body = procedure(MODULE_SOURCE, "給油警告を記録シートへ反映", "Sub")
+        body = procedure(MODULE_SOURCE, "給油警告を記録シートへ反映", "Function")
         self.assertIn("logWS.Cells(1, gasCol)", body)
         self.assertNotRegex(body, r'logWS\.Cells\(1,\s*gasCol\)\.Value\s*=')
 
@@ -240,7 +240,7 @@ class FuelWarningLogicTests(unittest.TestCase):
         self.assertIn('"給油照合警告"', MODULE_SOURCE)
         self.assertIn("給油警告を記録シートへ反映", MODULE_SOURCE)
         self.assertIn("セルの自動チェック警告カテゴリを除去", MODULE_SOURCE)
-        self.assertIn("gasCol", procedure(MODULE_SOURCE, "給油警告を記録シートへ反映", "Sub"))
+        self.assertIn("gasCol", procedure(MODULE_SOURCE, "給油警告を記録シートへ反映", "Function"))
 
     def test_standalone_and_content_check_both_refresh_fuel_warning(self):
         self.assertIn("給油警告を記録シートへ反映", procedure(MODULE_SOURCE, "給油記録を照合実行", "Function"))
@@ -340,13 +340,13 @@ class DriverNameLogicTests(unittest.TestCase):
         self.assertLess(public.index("運転者氏名をチェック"), public.index("給油記録を照合実行(False)"))
         self.assertNotIn("運転者氏名をチェック", procedure(MODULE_SOURCE, "入力内容チェック実行", "Function"))
         for name in ("CSV取込", "記録シート整理を実行"):
-            self.assertNotIn("運転者氏名をチェック", procedure(MODULE_SOURCE, name))
+            self.assertNotIn("運転者氏名をチェック", procedure(MODULE_SOURCE, name, "Function" if name == "記録シート整理を実行" else "Sub"))
         self.assertIn("Public Sub 運転者名マスタを初期作成()", MODULE_SOURCE)
         self.assertNotRegex(MODULE_SOURCE, r'(?im)^\s*ws\.Cells\([^\n]*,\s*"W"\)\.Value\s*=')
 
     def test_missing_master_has_no_popup_and_history_check_keeps_running(self):
         public = procedure(MODULE_SOURCE, "入力内容チェック")
-        checker = procedure(MODULE_SOURCE, "運転者氏名をチェック", "Sub")
+        checker = procedure(MODULE_SOURCE, "運転者氏名をチェック", "Function")
         self.assertIn("運転者氏名をチェック", public)
         self.assertNotIn("運転者名マスタが未作成です", MODULE_SOURCE)
         self.assertNotIn("MasterMissing:", checker)
@@ -359,7 +359,7 @@ class DriverNameLogicTests(unittest.TestCase):
         self.assertLess(public.index("給油記録を照合実行(False)"), public.index("車両候補確認画面を表示"))
 
     def test_name_comment_category_is_refreshed_not_hand_comments(self):
-        body = procedure(MODULE_SOURCE, "運転者氏名をチェック", "Sub")
+        body = procedure(MODULE_SOURCE, "運転者氏名をチェック", "Function")
         self.assertIn('"運転者名警告"', body)
         self.assertIn("セルの自動チェック警告カテゴリを除去", body)
 
@@ -373,7 +373,7 @@ class DriverNameLogicTests(unittest.TestCase):
         body = procedure(MODULE_SOURCE, "運転者名マスタを初期作成")
         self.assertIn('Cells(outputRow, "A").Value', body)
         self.assertNotIn('Cells(outputRow, "W").Value', body)
-        self.assertNotIn('Cells(outputRow, "A").Value =', procedure(MODULE_SOURCE, "運転者氏名をチェック", "Sub"))
+        self.assertNotIn('Cells(outputRow, "A").Value =', procedure(MODULE_SOURCE, "運転者氏名をチェック", "Function"))
 
 
 class VBAWarningWiringTests(unittest.TestCase):

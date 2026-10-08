@@ -21,20 +21,23 @@ class ManualContentCheckFuelWiringTests(unittest.TestCase):
     def test_manual_content_check_runs_in_required_order(self):
         body = procedure(MODULE, "入力内容チェック")
         calls = [
-            "Call 入力内容チェック実行(True)",
-            "Call 給油記録を照合実行(False)",
+            "validationFailures = 入力内容チェック実行(False)",
+            "driverFailures = 運転者氏名をチェック()",
+            "fuelSucceeded = 給油記録を照合実行(False)",
             "Call 車両候補確認画面を表示",
+            "Call 未確認行を自動確定",
         ]
-        self.assertEqual(body.count("Call 給油記録を照合実行(False)"), 1)
+        self.assertEqual(body.count("fuelSucceeded = 給油記録を照合実行(False)"), 1)
         positions = [body.index(call) for call in calls]
         self.assertEqual(positions, sorted(positions))
 
     def test_internal_content_check_does_not_run_fuel_reconciliation(self):
         body = procedure(MODULE, "入力内容チェック実行", "Function")
         self.assertNotIn("給油記録を照合", body)
-        self.assertEqual(MODULE.count("Call 入力内容チェック実行(False)"), 2)
+        self.assertEqual(MODULE.count("Call 入力内容チェック実行(False)"), 1)
+        self.assertIn("validationFailures = 入力内容チェック実行(False)", procedure(MODULE, "記録シート整理を実行", "Function"))
         self.assertNotIn("給油記録を照合実行", procedure(MODULE, "CSV取込"))
-        self.assertNotIn("給油記録を照合実行", procedure(MODULE, "記録シート整理を実行"))
+        self.assertNotIn("給油記録を照合実行", procedure(MODULE, "記録シート整理を実行", "Function"))
 
     def test_standalone_fuel_macro_remains_available(self):
         body = procedure(MODULE, "給油記録を照合")
